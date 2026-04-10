@@ -2,6 +2,7 @@
 // Source of truth is PROTOCOL.md at the repo root.
 
 import type { Cap } from './cap.js';
+import type { SessionAttestation } from './identity.js';
 
 export interface Envelope<T = unknown> {
     type: string;
@@ -16,6 +17,7 @@ export interface AgentSummary {
     pubkey: string;
     display_name?: string;
     description?: string;
+    identity_attestation?: SessionAttestation;
 }
 
 export interface TopicSummary {
@@ -31,6 +33,8 @@ export interface JoinPayload {
     display_name?: string;
     description?: string;
     features?: string[];
+    /** optional binding of this session key to a long-lived identity key */
+    session_attestation?: SessionAttestation;
 }
 
 export interface SendPayload {
