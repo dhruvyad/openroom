@@ -2,6 +2,7 @@ import type { WebSocket } from 'ws';
 import {
     verifyCapChain,
     verifyEnvelope,
+    verifySessionAttestation,
     type AgentSummary,
     type Cap,
     type CreateTopicPayload,
@@ -10,6 +11,7 @@ import {
     type ListTopicsPayload,
     type SendPayload,
     type ServerEvent,
+    type SessionAttestation,
     type SubscribePayload,
     type TopicSummary,
     type UnsubscribePayload,
@@ -22,6 +24,10 @@ interface Agent {
     description?: string;
     joined: boolean;
     challengeNonce: string;
+    /** long-lived identity pubkey if the agent presented a valid attestation */
+    identityPubkey?: string;
+    /** the raw attestation, forwarded to peers as-is so they can verify locally */
+    identityAttestation?: SessionAttestation;
 }
 
 interface Topic {
@@ -214,6 +220,31 @@ export class RelayCore {
             return;
         }
 
+        // Optional session attestation linking this session key to a long-
+        // lived identity key. The relay verifies the signature and that the
+        // attestation actually names this session, but otherwise treats the
+        // identity pubkey as opaque — reputation and trust are type-level,
+        // not relay-level.
+        const att = envelope.payload.session_attestation;
+        if (att !== undefined) {
+            if (att.session_pubkey !== envelope.from) {
+                this.sendError(
+                    agent.ws,
+                    'session attestation does not bind envelope session'
+                );
+                return;
+            }
+            if (!verifySessionAttestation(att)) {
+                this.sendError(
+                    agent.ws,
+                    'invalid session attestation signature or expiry'
+                );
+                return;
+            }
+            agent.identityPubkey = att.identity_pubkey;
+            agent.identityAttestation = att;
+        }
+
         agent.sessionPubkey = envelope.from;
         agent.displayName = envelope.payload.display_name;
         agent.description = envelope.payload.description;
@@ -275,7 +306,7 @@ export class RelayCore {
         if (topic.postCap !== null) {
             const check = this.checkCap(
                 envelope.payload.cap_proof,
-                agent.sessionPubkey,
+                agent,
                 topic.postCap,
                 roomName,
                 topicName,
@@ -459,7 +490,7 @@ export class RelayCore {
         if (topic.subscribeCap !== null) {
             const check = this.checkCap(
                 envelope.payload.proof,
-                agent.sessionPubkey,
+                agent,
                 topic.subscribeCap,
                 roomName,
                 topicName,
@@ -658,7 +689,7 @@ export class RelayCore {
 
     private checkCap(
         proof: Cap | undefined,
-        audience: string,
+        agent: Agent,
         expectedRoot: string,
         roomName: string,
         topicName: string,
@@ -676,13 +707,32 @@ export class RelayCore {
             };
         }
         const resource = `room:${roomName}/topic:${topicName}`;
-        return verifyCapChain(proof, {
-            expectedAudience: audience,
-            expectedRoot,
-            requiredResource: resource,
-            requiredAction: action,
-            now: Math.floor(Date.now() / 1000),
-        });
+        const now = Math.floor(Date.now() / 1000);
+
+        // The leaf may be audienced at either the agent's session key or,
+        // if they proved possession of a long-lived identity key via a
+        // session attestation, the identity key. This is what makes caps
+        // survive across reconnections.
+        const candidates: string[] = [agent.sessionPubkey];
+        if (agent.identityPubkey !== undefined) {
+            candidates.push(agent.identityPubkey);
+        }
+        let lastReason: string | undefined;
+        for (const audience of candidates) {
+            const result = verifyCapChain(proof, {
+                expectedAudience: audience,
+                expectedRoot,
+                requiredResource: resource,
+                requiredAction: action,
+                now,
+            });
+            if (result.ok) return result;
+            lastReason = result.reason;
+        }
+        return {
+            ok: false,
+            reason: lastReason ?? 'no valid cap for session or identity',
+        };
     }
 
     private snapshotAgents(room: Room): AgentSummary[] {
@@ -692,6 +742,7 @@ export class RelayCore {
                 pubkey: a.sessionPubkey,
                 display_name: a.displayName,
                 description: a.description,
+                identity_attestation: a.identityAttestation,
             }));
     }
 
