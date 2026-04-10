@@ -132,7 +132,13 @@ export async function loadIdentity(
     };
 }
 
-/** Save an identity keypair to disk with restrictive permissions (0600). */
+/**
+ * Save an identity keypair to disk atomically (write to tmp + rename) with
+ * restrictive permissions (0600). The rename is atomic on POSIX, so crashing
+ * mid-write leaves the previous file intact. Mode is enforced on the tmp
+ * file before rename so overwriting an existing file with looser permissions
+ * (e.g. an older 0644 file from a backup) lands the final inode at 0600.
+ */
 export async function saveIdentity(
     keypair: Keypair,
     filePath?: string
@@ -140,21 +146,62 @@ export async function saveIdentity(
     const p = filePath ?? defaultIdentityPath();
     const dir = path.dirname(p);
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+
     const stored: StoredIdentity = {
         kind: 'ed25519',
         private_key: toBase64Url(keypair.privateKey),
         public_key: toBase64Url(keypair.publicKey),
     };
-    await fs.writeFile(p, JSON.stringify(stored, null, 2), { mode: 0o600 });
+    const data = JSON.stringify(stored, null, 2);
+    const tmp = `${p}.tmp.${process.pid}.${Date.now()}`;
+    await fs.writeFile(tmp, data, { mode: 0o600 });
+    // Force 0600 even if umask stripped it at creation time.
+    await fs.chmod(tmp, 0o600);
+    await fs.rename(tmp, p);
 }
 
-/** Load the identity keypair if it exists, otherwise generate one and save it. */
+/**
+ * Load the identity keypair if it exists, otherwise generate one and save
+ * it atomically. Uses exclusive-create (`wx` flag) so that two concurrent
+ * callers on the same path do not both win the "create new key" race —
+ * whichever caller loses EEXIST re-reads the winner's file instead of
+ * overwriting it, so the in-memory and on-disk keypairs agree.
+ */
 export async function loadOrCreateIdentity(
     filePath?: string
 ): Promise<Keypair> {
-    const existing = await loadIdentity(filePath);
+    const p = filePath ?? defaultIdentityPath();
+    const existing = await loadIdentity(p);
     if (existing) return existing;
+
     const fresh = generateKeypair();
-    await saveIdentity(fresh, filePath);
-    return fresh;
+    const dir = path.dirname(p);
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+
+    const stored: StoredIdentity = {
+        kind: 'ed25519',
+        private_key: toBase64Url(fresh.privateKey),
+        public_key: toBase64Url(fresh.publicKey),
+    };
+    const data = JSON.stringify(stored, null, 2);
+
+    try {
+        // 'wx' = write + exclusive create (O_EXCL|O_CREAT). Fails with
+        // EEXIST if the file exists, which is the TOCTOU resolution:
+        // another process beat us to it, re-read their file.
+        const handle = await fs.open(p, 'wx', 0o600);
+        try {
+            await handle.writeFile(data);
+        } finally {
+            await handle.close();
+        }
+        await fs.chmod(p, 0o600);
+        return fresh;
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === 'EEXIST') {
+            const winning = await loadIdentity(p);
+            if (winning) return winning;
+        }
+        throw err;
+    }
 }
