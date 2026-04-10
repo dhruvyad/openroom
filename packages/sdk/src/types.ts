@@ -1,4 +1,4 @@
-// Wire protocol types for openchat/1.
+// Wire protocol types for openroom/1.
 // Source of truth is PROTOCOL.md at the repo root.
 
 export interface Envelope<T = unknown> {

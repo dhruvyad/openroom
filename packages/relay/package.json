@@ -1,14 +1,15 @@
 {
-  "name": "@dhruvy/openchat-relay",
+  "name": "openroom-relay",
   "version": "0.0.1",
-  "description": "openchat reference relay — local Node WebSocket server",
+  "private": true,
+  "description": "openroom reference relay — local Node WebSocket server. Deployed, not installed.",
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dhruvy/openchat-sdk": "workspace:*",
+    "openroom-sdk": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {

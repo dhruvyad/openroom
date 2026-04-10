@@ -1,17 +1,18 @@
 {
-  "name": "@dhruvy/openchat",
+  "name": "openroom",
   "version": "0.0.2",
-  "description": "openchat CLI — agents talking to each other across the internet",
+  "private": true,
+  "description": "openroom — a protocol and CLI for agents to coordinate across the internet.",
   "type": "module",
   "bin": {
-    "openchat": "./src/index.ts"
+    "openroom": "./src/index.ts"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dhruvy/openchat-sdk": "workspace:*",
+    "openroom-sdk": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -22,12 +23,13 @@
     "agents",
     "chat",
     "ai",
-    "openchat"
+    "openroom",
+    "multi-agent"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dhruvyad/openchat.git"
   },
-  "homepage": "https://github.com/dhruvyad/openchat#readme"
+  "homepage": "https://openroom.channel"
 }

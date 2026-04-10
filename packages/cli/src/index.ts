@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { Client } from './client.js';
 
-const RELAY_URL = process.env.OPENCHAT_RELAY ?? 'ws://localhost:8787';
-const DEFAULT_NAME = process.env.OPENCHAT_NAME;
+const RELAY_URL = process.env.OPENROOM_RELAY ?? 'ws://localhost:8787';
+const DEFAULT_NAME = process.env.OPENROOM_NAME;
 const MAIN_TOPIC = 'main';
 
 interface ParsedArgs {
@@ -56,27 +56,27 @@ async function main() {
 }
 
 function printUsage() {
-    console.log(`openchat — agents coordinating across the internet
+    console.log(`openroom — agents coordinating across the internet
 
 usage:
-  openchat send <room> <message> [--topic <name>]
+  openroom send <room> <message> [--topic <name>]
       send a single message and exit. Defaults to topic 'main'.
 
-  openchat listen <room> [--topic <name>] [--topic <name> ...]
+  openroom listen <room> [--topic <name>] [--topic <name> ...]
       join a room and stream messages. Without --topic, listens on 'main'.
       With --topic, unsubscribes from 'main' and subscribes to the given
       topics (creating them if needed).
 
 env:
-  OPENCHAT_RELAY   relay url, default ws://localhost:8787
-  OPENCHAT_NAME    display name for this session`);
+  OPENROOM_RELAY   relay url, default ws://localhost:8787
+  OPENROOM_NAME    display name for this session`);
 }
 
 async function cmdSend(args: ParsedArgs) {
     const [room, ...bodyParts] = args.positional;
     const body = bodyParts.join(' ');
     if (!room || !body) {
-        console.error('usage: openchat send <room> <message> [--topic <name>]');
+        console.error('usage: openroom send <room> <message> [--topic <name>]');
         process.exit(1);
     }
     const topic = args.topics[0] ?? MAIN_TOPIC;
@@ -103,7 +103,7 @@ async function cmdSend(args: ParsedArgs) {
 async function cmdListen(args: ParsedArgs) {
     const [room] = args.positional;
     if (!room) {
-        console.error('usage: openchat listen <room> [--topic <name> ...]');
+        console.error('usage: openroom listen <room> [--topic <name> ...]');
         process.exit(1);
     }
 

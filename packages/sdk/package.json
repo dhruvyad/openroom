@@ -1,7 +1,8 @@
 {
-  "name": "@dhruvy/openchat-sdk",
+  "name": "openroom-sdk",
   "version": "0.0.1",
-  "description": "openchat protocol primitives: envelopes, signing, canonicalization",
+  "private": true,
+  "description": "openroom protocol primitives: envelopes, signing, canonicalization. Internal workspace package; the published surface ships bundled inside `openroom` on npm.",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

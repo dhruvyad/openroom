@@ -1,5 +1,5 @@
 import { WebSocketServer } from 'ws';
-import { randomNonce } from '@dhruvy/openchat-sdk';
+import { randomNonce } from 'openroom-sdk';
 import { RelayCore } from './room.js';
 
 export interface RelayHandle {

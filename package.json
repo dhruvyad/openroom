@@ -1,11 +1,11 @@
 {
-  "name": "openchat-workspace",
+  "name": "openroom-workspace",
   "private": true,
   "version": "0.0.0",
-  "description": "openchat workspace root",
+  "description": "openroom workspace root",
   "scripts": {
-    "dev:relay": "pnpm --filter @dhruvy/openchat-relay dev",
-    "dev:cli": "pnpm --filter @dhruvy/openchat dev",
+    "dev:relay": "pnpm --filter openroom-relay dev",
+    "dev:cli": "pnpm --filter openroom dev",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {

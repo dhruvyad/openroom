@@ -5,7 +5,7 @@ const port = Number.parseInt(process.env.PORT ?? '8787', 10);
 startRelay(port)
     .then((handle) => {
         console.log(
-            `openchat relay listening on ws://localhost:${handle.port}/v1/room/<name>`
+            `openroom relay listening on ws://localhost:${handle.port}/v1/room/<name>`
         );
     })
     .catch((err) => {

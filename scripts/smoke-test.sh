@@ -30,17 +30,17 @@ trap cleanup EXIT
 
 cd "$ROOT_DIR"
 
-PORT="$PORT" pnpm --filter @dhruvy/openchat-relay dev > "$RELAY_LOG" 2>&1 &
+PORT="$PORT" pnpm --filter openroom-relay dev > "$RELAY_LOG" 2>&1 &
 RELAY_PID=$!
 sleep 1
 
-OPENCHAT_RELAY="ws://localhost:$PORT" \
-    pnpm --filter @dhruvy/openchat dev listen "$ROOM" > "$LISTEN_LOG" 2>&1 &
+OPENROOM_RELAY="ws://localhost:$PORT" \
+    pnpm --filter openroom dev listen "$ROOM" > "$LISTEN_LOG" 2>&1 &
 LISTEN_PID=$!
 sleep 1
 
-OPENCHAT_RELAY="ws://localhost:$PORT" OPENCHAT_NAME=smoke-sender \
-    pnpm --filter @dhruvy/openchat dev send "$ROOM" "hello from sender" \
+OPENROOM_RELAY="ws://localhost:$PORT" OPENROOM_NAME=smoke-sender \
+    pnpm --filter openroom dev send "$ROOM" "hello from sender" \
     > /dev/null
 
 sleep 1

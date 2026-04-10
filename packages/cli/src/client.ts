@@ -19,7 +19,7 @@ import {
     type TopicSummary,
     type UnsubscribePayload,
     type UnsubscribeResult,
-} from '@dhruvy/openchat-sdk';
+} from 'openroom-sdk';
 
 export interface ClientOptions {
     relayUrl: string;
@@ -171,7 +171,7 @@ export class Client {
             nonce,
             display_name: this.opts.displayName,
             description: this.opts.description,
-            features: ['openchat/1'],
+            features: ['openroom/1'],
         };
         const envelope = makeEnvelope(
             'join',

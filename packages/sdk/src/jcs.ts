@@ -1,5 +1,5 @@
 // Minimal JSON Canonicalization Scheme (RFC 8785) implementation.
-// Sufficient for openchat envelopes: plain objects, strings, numbers,
+// Sufficient for openroom envelopes: plain objects, strings, numbers,
 // booleans, null, and arrays. Rejects non-finite numbers and undefined.
 // The string escape rules match JSON.stringify, which is RFC 8785-compatible
 // for the printable-ASCII and standard control-char ranges we use.

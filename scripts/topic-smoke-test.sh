@@ -43,20 +43,20 @@ trap cleanup EXIT
 
 cd "$ROOT_DIR"
 
-PORT="$PORT" pnpm --filter @dhruvy/openchat-relay dev > "$RELAY_LOG" 2>&1 &
+PORT="$PORT" pnpm --filter openroom-relay dev > "$RELAY_LOG" 2>&1 &
 RELAY_PID=$!
 sleep 1
 
-OPENCHAT_RELAY="ws://localhost:$PORT" OPENCHAT_NAME=listen-a \
-    pnpm --filter @dhruvy/openchat dev listen "$ROOM" --topic decisions > "$A_LOG" 2>&1 &
+OPENROOM_RELAY="ws://localhost:$PORT" OPENROOM_NAME=listen-a \
+    pnpm --filter openroom dev listen "$ROOM" --topic decisions > "$A_LOG" 2>&1 &
 A_PID=$!
 
-OPENCHAT_RELAY="ws://localhost:$PORT" OPENCHAT_NAME=listen-b \
-    pnpm --filter @dhruvy/openchat dev listen "$ROOM" --topic proposals > "$B_LOG" 2>&1 &
+OPENROOM_RELAY="ws://localhost:$PORT" OPENROOM_NAME=listen-b \
+    pnpm --filter openroom dev listen "$ROOM" --topic proposals > "$B_LOG" 2>&1 &
 B_PID=$!
 
-OPENCHAT_RELAY="ws://localhost:$PORT" OPENCHAT_NAME=listen-c \
-    pnpm --filter @dhruvy/openchat dev listen "$ROOM" > "$C_LOG" 2>&1 &
+OPENROOM_RELAY="ws://localhost:$PORT" OPENROOM_NAME=listen-c \
+    pnpm --filter openroom dev listen "$ROOM" > "$C_LOG" 2>&1 &
 C_PID=$!
 
 sleep 2
@@ -64,8 +64,8 @@ sleep 2
 for topic in decisions proposals main; do
     flag=""
     [[ "$topic" != "main" ]] && flag="--topic $topic"
-    OPENCHAT_RELAY="ws://localhost:$PORT" OPENCHAT_NAME=sender \
-        pnpm --filter @dhruvy/openchat dev send "$ROOM" "hello-$topic" $flag > /dev/null
+    OPENROOM_RELAY="ws://localhost:$PORT" OPENROOM_NAME=sender \
+        pnpm --filter openroom dev send "$ROOM" "hello-$topic" $flag > /dev/null
     sleep 0.5
 done
 

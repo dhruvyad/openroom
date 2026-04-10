@@ -20,7 +20,7 @@ importers:
 
   packages/cli:
     dependencies:
-      '@dhruvy/openchat-sdk':
+      openroom-sdk:
         specifier: workspace:*
         version: link:../sdk
       ws:
@@ -33,7 +33,7 @@ importers:
 
   packages/relay:
     dependencies:
-      '@dhruvy/openchat-sdk':
+      openroom-sdk:
         specifier: workspace:*
         version: link:../sdk
       ws:

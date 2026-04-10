@@ -11,7 +11,7 @@ import {
     type SubscribePayload,
     type TopicSummary,
     type UnsubscribePayload,
-} from '@dhruvy/openchat-sdk';
+} from 'openroom-sdk';
 
 interface Agent {
     ws: WebSocket;
