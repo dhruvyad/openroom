@@ -37,18 +37,23 @@ const DEFAULT_ATTESTATION_LIFETIME_SECONDS = 24 * 60 * 60;
 export interface SessionAttestation {
     identity_pubkey: string;
     session_pubkey: string;
+    /** Room name this attestation is scoped to. Prevents replay of an
+     * attestation captured from one room into another. */
+    room: string;
     expires_at: number;
     sig: string;
 }
 
 /**
  * Produce a signed attestation binding `sessionPubkey` to the identity
- * keypair. The canonical form excludes `sig`; signature is Ed25519 by the
- * identity private key.
+ * keypair for use in a specific room. The canonical form excludes `sig`;
+ * signature is Ed25519 by the identity private key. The attestation cannot
+ * be replayed to a different room because `room` is signed into it.
  */
 export function makeSessionAttestation(
     identityKeypair: Keypair,
     sessionPubkey: Uint8Array | string,
+    room: string,
     options?: { expiresAt?: number }
 ): SessionAttestation {
     const session_pubkey =
@@ -60,7 +65,7 @@ export function makeSessionAttestation(
         options?.expiresAt ??
         Math.floor(Date.now() / 1000) + DEFAULT_ATTESTATION_LIFETIME_SECONDS;
 
-    const unsigned = { identity_pubkey, session_pubkey, expires_at };
+    const unsigned = { identity_pubkey, session_pubkey, room, expires_at };
     const canonical = canonicalize(unsigned);
     const signature = sign(
         encoder.encode(canonical),
@@ -79,6 +84,7 @@ export function verifySessionAttestation(
         !attestation ||
         typeof attestation.identity_pubkey !== 'string' ||
         typeof attestation.session_pubkey !== 'string' ||
+        typeof attestation.room !== 'string' ||
         typeof attestation.expires_at !== 'number' ||
         typeof attestation.sig !== 'string'
     ) {

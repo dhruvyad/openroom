@@ -221,16 +221,23 @@ export class RelayCore {
         }
 
         // Optional session attestation linking this session key to a long-
-        // lived identity key. The relay verifies the signature and that the
-        // attestation actually names this session, but otherwise treats the
-        // identity pubkey as opaque — reputation and trust are type-level,
-        // not relay-level.
+        // lived identity key. The relay verifies the signature, that the
+        // attestation actually names this session, and that it is scoped to
+        // THIS room (not replayed from another). Trust and reputation are
+        // still type-level, not relay-level.
         const att = envelope.payload.session_attestation;
         if (att !== undefined) {
             if (att.session_pubkey !== envelope.from) {
                 this.sendError(
                     agent.ws,
                     'session attestation does not bind envelope session'
+                );
+                return;
+            }
+            if (att.room !== roomName) {
+                this.sendError(
+                    agent.ws,
+                    'session attestation is scoped to a different room'
                 );
                 return;
             }

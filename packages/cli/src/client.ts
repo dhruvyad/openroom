@@ -190,7 +190,8 @@ export class Client {
         if (this.opts.identityKeypair) {
             payload.session_attestation = makeSessionAttestation(
                 this.opts.identityKeypair,
-                this._publicKey
+                this._publicKey,
+                this.opts.room
             );
         }
         const envelope = makeEnvelope(
