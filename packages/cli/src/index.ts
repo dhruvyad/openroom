@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import * as os from 'node:os';
 import path from 'node:path';
+import * as readline from 'node:readline/promises';
 
 import {
     defaultIdentityPath,
     loadOrCreateIdentity,
+    makeEnvelope,
+    makeSessionAttestation,
     toBase64Url,
+    type AnnouncePayload,
     type Keypair,
+    type UnannouncePayload,
 } from 'openroom-sdk';
 import { Client } from './client.js';
 import { runMcpServer } from './claude-mcp.js';
@@ -16,17 +22,26 @@ const RELAY_URL = process.env.OPENROOM_RELAY ?? 'ws://localhost:8787';
 const DEFAULT_NAME = process.env.OPENROOM_NAME;
 const IDENTITY_PATH_ENV = process.env.OPENROOM_IDENTITY_PATH;
 const MAIN_TOPIC = 'main';
+const DEFAULT_ANNOUNCE_TTL_SECONDS = 7 * 24 * 60 * 60;
+const PUBLISH_CONSENT_MARKER = path.join(
+    os.homedir(),
+    '.openroom',
+    'publish-consent'
+);
 
 interface ParsedArgs {
     positional: string[];
     topics: string[];
     flags: Set<string>;
+    values: Map<string, string>;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
     const positional: string[] = [];
     const topics: string[] = [];
     const flags = new Set<string>();
+    const values = new Map<string, string>();
+    const VALUE_FLAGS = new Set(['description', 'authority']);
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i]!;
         if (arg === '--topic' || arg === '-t') {
@@ -38,13 +53,27 @@ function parseArgs(argv: string[]): ParsedArgs {
             topics.push(value);
         } else if (arg.startsWith('--topic=')) {
             topics.push(arg.slice('--topic='.length));
-        } else if (arg.startsWith('--') && !arg.includes('=')) {
-            flags.add(arg.slice(2));
+        } else if (arg.startsWith('--') && arg.includes('=')) {
+            const eq = arg.indexOf('=');
+            const name = arg.slice(2, eq);
+            values.set(name, arg.slice(eq + 1));
+        } else if (arg.startsWith('--')) {
+            const name = arg.slice(2);
+            if (VALUE_FLAGS.has(name)) {
+                const v = argv[++i];
+                if (v === undefined) {
+                    console.error(`--${name} requires a value`);
+                    process.exit(1);
+                }
+                values.set(name, v);
+            } else {
+                flags.add(name);
+            }
         } else {
             positional.push(arg);
         }
     }
-    return { positional, topics, flags };
+    return { positional, topics, flags, values };
 }
 
 async function main() {
@@ -66,6 +95,9 @@ async function main() {
             return;
         case 'claude':
             await cmdClaude(args);
+            return;
+        case 'unpublish':
+            await cmdUnpublish(args);
             return;
         case undefined:
         case '--help':
@@ -102,10 +134,19 @@ usage:
       env. Exposes openroom tools and pushes inbound room messages as
       notifications. Normally spawned via claude mcp add, not directly.
 
-  openroom claude <room> [--no-identity]
+  openroom claude <room> [--no-identity] [--public --description "..."] [--authority] [--yes]
       register the openroom MCP server locally with Claude Code and spawn
       claude, so the next claude session can send / subscribe / see
       messages in the given room. Registration is cleaned up on exit.
+      --public announces the room to the openroom.channel directory for
+      the duration of the session, re-announcing on each join. Requires
+      --description. --authority additionally writes a directory-config
+      resource that gates future announcements to the identity's pubkey.
+      --yes skips the first-publish confirmation prompt.
+
+  openroom unpublish <room>
+      remove an earlier announcement from the public directory.
+      Only the original announcer or the configured authority can unpublish.
 
 flags:
   --no-identity         connect ephemerally without a session attestation.
@@ -298,6 +339,58 @@ async function cmdClaude(args: ParsedArgs) {
         process.exit(1);
     }
 
+    const isPublic = args.flags.has('public');
+    const isAuthority = args.flags.has('authority');
+    const description = args.values.get('description');
+    const assumeYes = args.flags.has('yes');
+
+    if (isPublic && !description) {
+        console.error(
+            'error: --public requires --description to explain the room'
+        );
+        process.exit(1);
+    }
+    if (isPublic && args.flags.has('no-identity')) {
+        console.error(
+            'error: --public is incompatible with --no-identity (publish signs with your identity key)'
+        );
+        process.exit(1);
+    }
+    if (isAuthority && !isPublic) {
+        console.error('error: --authority requires --public');
+        process.exit(1);
+    }
+
+    if (isPublic && !assumeYes) {
+        const ok = await confirmFirstPublish(room, description!);
+        if (!ok) {
+            console.error('openroom: publish cancelled');
+            process.exit(1);
+        }
+    }
+
+    // If --public, do the directory work BEFORE claude is launched: write
+    // the directory-config resource if --authority, then post the announce
+    // envelope to the directory DO. Both happen via a short-lived Client
+    // connection so we don't have to plumb this through the MCP adapter.
+    if (isPublic) {
+        const identity = await loadOrCreateIdentity(IDENTITY_PATH_ENV);
+        if (isAuthority) {
+            await writeDirectoryConfigResource({
+                room,
+                authorityIdentity: identity,
+            });
+        }
+        await publishViaHttp({
+            room,
+            description: description!,
+            identity,
+        });
+        console.log(
+            `openroom: published "${room}" to ${relayHttpBase()}/v1/public-rooms`
+        );
+    }
+
     const mcpCommand = resolveMcpCommand();
     const env: Record<string, string> = {
         OPENROOM_ROOM: room,
@@ -372,6 +465,206 @@ function signalNumber(signal: NodeJS.Signals): number {
             return 1;
         default:
             return 0;
+    }
+}
+
+// --- Directory publish / unpublish -------------------------------------
+
+/** Convert the configured RELAY_URL (ws:// or wss://) to an https:// / http://
+ *  URL suitable for HTTP fetches against the relay's directory endpoints. */
+function relayHttpBase(): string {
+    const url = new URL(RELAY_URL);
+    const proto =
+        url.protocol === 'wss:' ? 'https:' : url.protocol === 'ws:' ? 'http:' : url.protocol;
+    return `${proto}//${url.host}`;
+}
+
+async function hasPublishConsent(): Promise<boolean> {
+    try {
+        return existsSync(PUBLISH_CONSENT_MARKER);
+    } catch {
+        return false;
+    }
+}
+
+async function recordPublishConsent(): Promise<void> {
+    try {
+        mkdirSync(path.dirname(PUBLISH_CONSENT_MARKER), {
+            recursive: true,
+            mode: 0o700,
+        });
+        writeFileSync(
+            PUBLISH_CONSENT_MARKER,
+            JSON.stringify({ consented_at: Math.floor(Date.now() / 1000) }),
+            { mode: 0o600 }
+        );
+    } catch (err) {
+        console.error(`warning: could not record publish consent: ${err}`);
+    }
+}
+
+async function confirmFirstPublish(
+    room: string,
+    description: string
+): Promise<boolean> {
+    if (await hasPublishConsent()) return true;
+
+    console.log();
+    console.log(`publishing ${room} to ${relayHttpBase()}`);
+    console.log(
+        'this will make the room name visible to anyone browsing'
+    );
+    console.log('openroom.channel. The description and your identity');
+    console.log('pubkey become attributable to you.');
+    console.log();
+    console.log(`room:        ${room}`);
+    console.log(`description: ${description}`);
+    console.log();
+
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+    });
+    try {
+        const answer = await rl.question('continue? [y/N]: ');
+        if (answer.trim().toLowerCase() !== 'y') {
+            return false;
+        }
+    } finally {
+        rl.close();
+    }
+    await recordPublishConsent();
+    return true;
+}
+
+/**
+ * Post an announcement to the directory via HTTP. The announcer signs the
+ * envelope with their identity private key directly (no separate session
+ * key). The directory DO accepts the envelope as signed-by-identity and
+ * records it. For authority-mode rooms this is exactly what the policy
+ * check expects: `envelope.from === policy.authority`.
+ *
+ * Note: we do NOT include a session attestation here because the identity
+ * key IS the signing key. The attestation would bind an identity to a
+ * session pubkey, but in this case they're the same key — there's nothing
+ * to attest.
+ */
+async function publishViaHttp(opts: {
+    room: string;
+    description: string;
+    identity: Keypair;
+}): Promise<void> {
+    const { room, description, identity } = opts;
+    const now = Math.floor(Date.now() / 1000);
+    const expiresAt = now + DEFAULT_ANNOUNCE_TTL_SECONDS;
+
+    const payload: AnnouncePayload = {
+        room,
+        description,
+        expires_at: expiresAt,
+    };
+    const envelope = makeEnvelope(
+        'announce',
+        payload,
+        identity.privateKey,
+        identity.publicKey
+    );
+
+    const response = await fetch(`${relayHttpBase()}/v1/directory`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(envelope),
+    });
+    const result = (await response.json()) as {
+        success?: boolean;
+        error?: string;
+    };
+    if (!result.success) {
+        throw new Error(result.error ?? 'announce failed');
+    }
+}
+
+/**
+ * Write the room's `directory-config` resource with authority mode set to
+ * the caller's identity pubkey. Opens a short-lived Client to do this, then
+ * leaves. Used by `openroom claude --public --authority` as part of the
+ * pre-spawn setup.
+ *
+ * The resource is stored as JSON matching what DirectoryDurableObject's
+ * policy parser expects: `{"mode": "authority", "authority": "<pubkey>"}`.
+ * The resource itself is protected by a validation hook pointing at the
+ * same identity pubkey, so no other agent can overwrite the policy.
+ */
+async function writeDirectoryConfigResource(opts: {
+    room: string;
+    authorityIdentity: Keypair;
+}): Promise<void> {
+    const { room, authorityIdentity } = opts;
+    const authorityPub = toBase64Url(authorityIdentity.publicKey);
+
+    // The Client generates its own ephemeral session keypair; we only
+    // pass the long-lived identity keypair via opts so the session is
+    // attested to that identity on join.
+    const client = new Client({
+        relayUrl: RELAY_URL,
+        room,
+        displayName: 'openroom-cli-setup',
+        identityKeypair: authorityIdentity,
+        onError: (reason) =>
+            console.error(`[directory-config setup] ${reason}`),
+    });
+    try {
+        await client.connect();
+        const policy = JSON.stringify({
+            mode: 'authority',
+            authority: authorityPub,
+        });
+        await client.putResource('directory-config', policy, {
+            kind: 'directory-config',
+            mime: 'application/json',
+            validationHook: authorityPub,
+        });
+    } finally {
+        client.leave();
+    }
+}
+
+async function cmdUnpublish(args: ParsedArgs) {
+    const [room] = args.positional;
+    if (!room) {
+        console.error('usage: openroom unpublish <room>');
+        process.exit(1);
+    }
+
+    const identity = await loadOrCreateIdentity(IDENTITY_PATH_ENV);
+    // Use the identity keypair directly — no session context needed
+    // since we're not connecting a WebSocket. The relay's directory DO
+    // accepts any signed envelope; unannounce is gated by matching the
+    // session pubkey of the original announcer OR the authority pubkey.
+    const payload: UnannouncePayload = { room };
+    const envelope = makeEnvelope(
+        'unannounce',
+        payload,
+        identity.privateKey,
+        identity.publicKey
+    );
+
+    const response = await fetch(`${relayHttpBase()}/v1/directory`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(envelope),
+    });
+    const result = (await response.json()) as {
+        success?: boolean;
+        error?: string;
+    };
+    if (result.success) {
+        console.log(`unpublished ${room}`);
+    } else {
+        console.error(
+            `unpublish failed: ${result.error ?? 'unknown error'}`
+        );
+        process.exit(1);
     }
 }
 
