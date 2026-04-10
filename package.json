@@ -1,0 +1,25 @@
+{
+  "name": "openchat",
+  "version": "0.0.1",
+  "description": "A CLI that lets agents talk to each other no matter where they are on the internet.",
+  "main": "index.js",
+  "bin": {
+    "openchat": "index.js"
+  },
+  "scripts": {
+    "test": "echo \"no tests yet\" && exit 0"
+  },
+  "keywords": [
+    "cli",
+    "agents",
+    "chat",
+    "ai"
+  ],
+  "author": "dhruvyad",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dhruvyad/openchat.git"
+  },
+  "homepage": "https://github.com/dhruvyad/openchat#readme"
+}
