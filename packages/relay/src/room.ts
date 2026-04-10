@@ -52,7 +52,63 @@ interface Agent {
     /** token bucket for per-connection rate limiting */
     rateTokens: number;
     rateLastRefillMs: number;
+    /** names of topics this agent currently subscribes to. Tracked here so
+     *  it can be serialized into ws attachment for hibernation survival. */
+    subscribedTopics: Set<string>;
 }
+
+/**
+ * Hooks the DO (or Node server) provides so RelayCore can fire-and-forget
+ * notifications about state mutations that need to reach durable storage.
+ * See HIBERNATION.md for the architecture.
+ */
+export interface RelayCoreHooks {
+    topicCreated?(record: {
+        name: string;
+        subscribeCap: string | null;
+        postCap: string | null;
+    }): void;
+    topicDeleted?(name: string): void;
+    resourcePut?(record: {
+        name: string;
+        cid: string;
+        kind: string;
+        mime: string;
+        size: number;
+        content: Uint8Array;
+        createdBy: string;
+        createdAt: number;
+        validationHook: string | null;
+    }): void;
+    resourceDeleted?(name: string): void;
+    /** Called when any per-agent state changes that needs to survive hibernation
+     *  (join, subscribe, unsubscribe, rate token decrement). The DO flushes
+     *  the attachment after the current handler returns. */
+    agentMutated?(ws: RelayWebSocket): void;
+}
+
+/**
+ * Serialized agent state for ws.serializeAttachment(). MUST fit under the
+ * Cloudflare 2 KB attachment cap. Any new field added here needs a
+ * schema-version bump and a migration path.
+ */
+export interface AgentAttachment {
+    v: number;
+    sessionPubkey: string;
+    displayName?: string;
+    description?: string;
+    identityPubkey?: string;
+    identityAttestation?: SessionAttestation;
+    rateTokens: number;
+    rateLastRefillMs: number;
+    subscribedTopics: string[];
+}
+
+export const AGENT_ATTACHMENT_VERSION = 1;
+/** Soft cap used by the DO to warn before we hit the hard 2 KiB cap. */
+export const AGENT_ATTACHMENT_SOFT_LIMIT = 1536;
+/** Hard cap enforced by Cloudflare — writes > 2 KB throw. */
+export const AGENT_ATTACHMENT_HARD_LIMIT = 2048;
 
 interface Topic {
     name: string;
@@ -105,6 +161,12 @@ const MAX_TOTAL_RESOURCE_BYTES_PER_ROOM = 32 * 1024 * 1024;
 // until they back off.
 const RATE_LIMIT_BURST = 100;
 const RATE_LIMIT_SUSTAINED_PER_SEC = 20;
+
+/** Max topics a single agent can subscribe to. Bounds attachment size
+ *  (30 topic names * ~40 bytes = 1.2 KB) so rehydration always fits. */
+const MAX_SUBSCRIPTIONS_PER_AGENT = 30;
+/** Max description length so the attachment stays under 2 KB. */
+const MAX_DESCRIPTION_BYTES = 256;
 // Maximum cap chain length (leaf + proof ancestors). Caps one level past a
 // reasonable hierarchy and bounds per-action Ed25519 verification work so
 // malicious clients can't amplify DoS via enormous proof chains.
@@ -167,6 +229,159 @@ export class RelayCore {
     // glue (Node ws.on handlers or CF DO webSocket event listeners) look up
     // the Agent from the ws object without smuggling it through closures.
     private connections = new Map<RelayWebSocket, Agent>();
+    private hooks: RelayCoreHooks;
+
+    constructor(hooks: RelayCoreHooks = {}) {
+        this.hooks = hooks;
+    }
+
+    /** Is this ws currently registered with the core? Used by the DO to
+     *  decide whether it needs to rehydrate from ws.deserializeAttachment()
+     *  before dispatching a message (true on wake from hibernation). */
+    knows(ws: RelayWebSocket): boolean {
+        return this.connections.has(ws);
+    }
+
+    getAgent(ws: RelayWebSocket): Agent | undefined {
+        return this.connections.get(ws);
+    }
+
+    /**
+     * Bulk-load room state after a hibernation wake. Called from the DO's
+     * async initialize() path. Replaces any existing in-memory state for
+     * this room (the only place that would have existing state is the
+     * freshly-constructed empty Maps). Also makes sure a default `main`
+     * topic exists even if storage is empty.
+     */
+    loadSnapshot(
+        roomName: string,
+        snapshot: {
+            topics: Array<{
+                name: string;
+                subscribeCap: string | null;
+                postCap: string | null;
+            }>;
+            resources: Array<{
+                name: string;
+                cid: string;
+                kind: string;
+                mime: string;
+                size: number;
+                content: Uint8Array;
+                createdBy: string;
+                createdAt: number;
+                validationHook: string | null;
+            }>;
+        }
+    ): void {
+        const room: Room = {
+            name: roomName,
+            agents: new Map(),
+            topics: new Map(),
+            resources: new Map(),
+        };
+        for (const t of snapshot.topics) {
+            room.topics.set(t.name, {
+                name: t.name,
+                subscribeCap: t.subscribeCap,
+                postCap: t.postCap,
+                members: new Set(),
+            });
+        }
+        // Always guarantee the default topic exists.
+        if (!room.topics.has(MAIN_TOPIC)) {
+            room.topics.set(MAIN_TOPIC, {
+                name: MAIN_TOPIC,
+                subscribeCap: null,
+                postCap: null,
+                members: new Set(),
+            });
+        }
+        for (const r of snapshot.resources) {
+            room.resources.set(r.name, {
+                name: r.name,
+                cid: r.cid,
+                kind: r.kind,
+                mime: r.mime,
+                size: r.size,
+                content: r.content,
+                createdBy: r.createdBy,
+                createdAt: r.createdAt,
+                validationHook: r.validationHook,
+                subscribers: new Set(),
+            });
+        }
+        this.rooms.set(roomName, room);
+    }
+
+    /**
+     * Rehydrate an agent that was previously joined but lost from in-memory
+     * state due to DO hibernation. Reconstitutes the agent from its serialized
+     * attachment, registers it in `connections`, and re-populates topic
+     * `members` sets for any topics the agent was subscribed to. Topics that
+     * no longer exist in the loaded room state are dropped silently and the
+     * caller should re-serialize the attachment to reflect the cleanup.
+     *
+     * Returns the set of topic names that were dropped, if any — non-empty
+     * means the attachment is now stale and should be re-persisted.
+     */
+    rehydrateAgent(
+        ws: RelayWebSocket,
+        attachment: AgentAttachment,
+        roomName: string
+    ): { droppedTopics: string[] } {
+        const room = this.ensureRoom(roomName);
+        if (attachment.v !== AGENT_ATTACHMENT_VERSION) {
+            ws.close(1011, 'unknown agent schema version');
+            return { droppedTopics: [] };
+        }
+
+        const agent: Agent = {
+            ws,
+            roomName,
+            sessionPubkey: attachment.sessionPubkey,
+            displayName: attachment.displayName,
+            description: attachment.description,
+            joined: true,
+            challengeNonce: '', // already used; not needed after join
+            identityPubkey: attachment.identityPubkey,
+            identityAttestation: attachment.identityAttestation,
+            rateTokens: attachment.rateTokens,
+            rateLastRefillMs: attachment.rateLastRefillMs,
+            subscribedTopics: new Set(),
+        };
+
+        this.connections.set(ws, agent);
+        room.agents.set(agent.sessionPubkey, agent);
+
+        const droppedTopics: string[] = [];
+        for (const topicName of attachment.subscribedTopics) {
+            const topic = room.topics.get(topicName);
+            if (!topic) {
+                droppedTopics.push(topicName);
+                continue;
+            }
+            topic.members.add(agent.sessionPubkey);
+            agent.subscribedTopics.add(topicName);
+        }
+
+        return { droppedTopics };
+    }
+
+    /** Serialize an agent to the shape persisted via ws.serializeAttachment. */
+    serializeAgent(agent: Agent): AgentAttachment {
+        return {
+            v: AGENT_ATTACHMENT_VERSION,
+            sessionPubkey: agent.sessionPubkey,
+            displayName: agent.displayName,
+            description: agent.description,
+            identityPubkey: agent.identityPubkey,
+            identityAttestation: agent.identityAttestation,
+            rateTokens: agent.rateTokens,
+            rateLastRefillMs: agent.rateLastRefillMs,
+            subscribedTopics: Array.from(agent.subscribedTopics),
+        };
+    }
 
     /**
      * Register a new incoming WebSocket for the given room. Sends the
@@ -186,6 +401,7 @@ export class RelayCore {
             challengeNonce,
             rateTokens: RATE_LIMIT_BURST,
             rateLastRefillMs: Date.now(),
+            subscribedTopics: new Set(),
         };
         this.connections.set(ws, agent);
         this.sendEvent(ws, { type: 'challenge', nonce: challengeNonce });
@@ -426,7 +642,19 @@ export class RelayCore {
 
         agent.sessionPubkey = envelope.from;
         agent.displayName = envelope.payload.display_name;
-        agent.description = envelope.payload.description;
+        // Cap description to bound per-ws attachment size so it survives
+        // hibernation via ws.serializeAttachment (2 KB hard limit).
+        if (
+            typeof envelope.payload.description === 'string' &&
+            envelope.payload.description.length > MAX_DESCRIPTION_BYTES
+        ) {
+            agent.description = envelope.payload.description.slice(
+                0,
+                MAX_DESCRIPTION_BYTES
+            );
+        } else {
+            agent.description = envelope.payload.description;
+        }
         agent.joined = true;
 
         const existing = room.agents.get(agent.sessionPubkey);
@@ -442,6 +670,10 @@ export class RelayCore {
         // Auto-subscribe to the default topic.
         const main = room.topics.get(MAIN_TOPIC)!;
         main.members.add(agent.sessionPubkey);
+        agent.subscribedTopics.add(MAIN_TOPIC);
+
+        // Per-agent attachment is now dirty with the freshly-joined state.
+        this.hooks.agentMutated?.(agent.ws);
 
         const agents = this.snapshotAgents(room);
         const topics = this.snapshotTopics(room);
@@ -604,6 +836,11 @@ export class RelayCore {
             };
             room.topics.set(name, topic);
             created = true;
+            this.hooks.topicCreated?.({
+                name,
+                subscribeCap,
+                postCap,
+            });
         } else if (
             topic.subscribeCap !== subscribeCap ||
             topic.postCap !== postCap
@@ -723,7 +960,25 @@ export class RelayCore {
             return;
         }
 
+        // Per-agent subscription cap — bounds attachment size so
+        // serialization never exceeds the 2 KB Cloudflare limit.
+        if (
+            !agent.subscribedTopics.has(topicName) &&
+            agent.subscribedTopics.size >= MAX_SUBSCRIPTIONS_PER_AGENT
+        ) {
+            this.sendResult(agent.ws, {
+                type: 'subscribe_result',
+                id: envelope.id,
+                success: false,
+                topic: topicName,
+                error: `agent subscription limit reached (${MAX_SUBSCRIPTIONS_PER_AGENT})`,
+            });
+            return;
+        }
+
         topic.members.add(agent.sessionPubkey);
+        agent.subscribedTopics.add(topicName);
+        this.hooks.agentMutated?.(agent.ws);
         this.sendResult(agent.ws, {
             type: 'subscribe_result',
             id: envelope.id,
@@ -774,6 +1029,8 @@ export class RelayCore {
             return;
         }
         topic.members.delete(agent.sessionPubkey);
+        agent.subscribedTopics.delete(topicName);
+        this.hooks.agentMutated?.(agent.ws);
         this.sendResult(agent.ws, {
             type: 'unsubscribe_result',
             id: envelope.id,
@@ -845,6 +1102,13 @@ export class RelayCore {
                 members: new Set(),
             });
             this.rooms.set(roomName, room);
+            // Persist the default topic so it survives hibernation even
+            // if nothing else has been created yet.
+            this.hooks.topicCreated?.({
+                name: MAIN_TOPIC,
+                subscribeCap: null,
+                postCap: null,
+            });
         }
         return room;
     }
@@ -1105,6 +1369,17 @@ export class RelayCore {
             subscribers: existing?.subscribers ?? new Set(),
         };
         room.resources.set(payload.name, resource);
+        this.hooks.resourcePut?.({
+            name: resource.name,
+            cid: resource.cid,
+            kind: resource.kind,
+            mime: resource.mime,
+            size: resource.size,
+            content: resource.content,
+            createdBy: resource.createdBy,
+            createdAt: resource.createdAt,
+            validationHook: resource.validationHook,
+        });
 
         const summary = summarizeResource(resource);
         this.sendResult(agent.ws, {
