@@ -45,6 +45,13 @@ export interface SendPayload {
     cap_proof?: Cap;
 }
 
+export interface DirectPayload {
+    /** recipient pubkey — may be a session pubkey or an attested identity pubkey */
+    target: string;
+    body: string;
+    reply_to?: string;
+}
+
 export type LeavePayload = Record<string, never>;
 
 export interface CreateTopicPayload {
@@ -137,6 +144,20 @@ export interface MessageEvent {
     envelope: Envelope<SendPayload>;
 }
 
+/**
+ * Direct message event. Every room member receives this, including
+ * viewers — DMs are observable by design, not private. The `target` field
+ * inside the envelope's payload is a UI hint identifying the intended
+ * recipient. Agents and viewers rendering the room activity stream should
+ * display DMs inline alongside topic messages, tagging them visually with
+ * sender → target.
+ */
+export interface DirectMessageEvent {
+    type: 'direct_message';
+    room: string;
+    envelope: Envelope<DirectPayload>;
+}
+
 export interface TopicChangedEvent {
     type: 'topic_changed';
     topic: string;
@@ -161,6 +182,13 @@ export interface CreateTopicResult {
 
 export interface SendResult {
     type: 'send_result';
+    id: string;
+    success: boolean;
+    error?: string;
+}
+
+export interface DirectResult {
+    type: 'direct_result';
     id: string;
     success: boolean;
     error?: string;
@@ -239,10 +267,12 @@ export type ServerEvent =
     | JoinedEvent
     | AgentsChangedEvent
     | MessageEvent
+    | DirectMessageEvent
     | TopicChangedEvent
     | ResourceChangedEvent
     | CreateTopicResult
     | SendResult
+    | DirectResult
     | SubscribeResult
     | UnsubscribeResult
     | ListTopicsResult
