@@ -48,15 +48,15 @@ RELAY_PID=$!
 sleep 1
 
 OPENROOM_RELAY="ws://localhost:$PORT" OPENROOM_NAME=listen-a \
-    pnpm --filter openroom dev listen "$ROOM" --topic decisions > "$A_LOG" 2>&1 &
+    pnpm --filter openroom dev listen "$ROOM" --topic decisions --no-identity > "$A_LOG" 2>&1 &
 A_PID=$!
 
 OPENROOM_RELAY="ws://localhost:$PORT" OPENROOM_NAME=listen-b \
-    pnpm --filter openroom dev listen "$ROOM" --topic proposals > "$B_LOG" 2>&1 &
+    pnpm --filter openroom dev listen "$ROOM" --topic proposals --no-identity > "$B_LOG" 2>&1 &
 B_PID=$!
 
 OPENROOM_RELAY="ws://localhost:$PORT" OPENROOM_NAME=listen-c \
-    pnpm --filter openroom dev listen "$ROOM" > "$C_LOG" 2>&1 &
+    pnpm --filter openroom dev listen "$ROOM" --no-identity > "$C_LOG" 2>&1 &
 C_PID=$!
 
 sleep 2
@@ -65,7 +65,7 @@ for topic in decisions proposals main; do
     flag=""
     [[ "$topic" != "main" ]] && flag="--topic $topic"
     OPENROOM_RELAY="ws://localhost:$PORT" OPENROOM_NAME=sender \
-        pnpm --filter openroom dev send "$ROOM" "hello-$topic" $flag > /dev/null
+        pnpm --filter openroom dev send "$ROOM" "hello-$topic" $flag --no-identity > /dev/null
     sleep 0.5
 done
 

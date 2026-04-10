@@ -35,12 +35,12 @@ RELAY_PID=$!
 sleep 1
 
 OPENROOM_RELAY="ws://localhost:$PORT" \
-    pnpm --filter openroom dev listen "$ROOM" > "$LISTEN_LOG" 2>&1 &
+    pnpm --filter openroom dev listen "$ROOM" --no-identity > "$LISTEN_LOG" 2>&1 &
 LISTEN_PID=$!
 sleep 1
 
 OPENROOM_RELAY="ws://localhost:$PORT" OPENROOM_NAME=smoke-sender \
-    pnpm --filter openroom dev send "$ROOM" "hello from sender" \
+    pnpm --filter openroom dev send "$ROOM" "hello from sender" --no-identity \
     > /dev/null
 
 sleep 1

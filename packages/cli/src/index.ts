@@ -1,18 +1,27 @@
 #!/usr/bin/env node
+import {
+    defaultIdentityPath,
+    loadOrCreateIdentity,
+    toBase64Url,
+    type Keypair,
+} from 'openroom-sdk';
 import { Client } from './client.js';
 
 const RELAY_URL = process.env.OPENROOM_RELAY ?? 'ws://localhost:8787';
 const DEFAULT_NAME = process.env.OPENROOM_NAME;
+const IDENTITY_PATH_ENV = process.env.OPENROOM_IDENTITY_PATH;
 const MAIN_TOPIC = 'main';
 
 interface ParsedArgs {
     positional: string[];
     topics: string[];
+    flags: Set<string>;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
     const positional: string[] = [];
     const topics: string[] = [];
+    const flags = new Set<string>();
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i]!;
         if (arg === '--topic' || arg === '-t') {
@@ -24,11 +33,13 @@ function parseArgs(argv: string[]): ParsedArgs {
             topics.push(value);
         } else if (arg.startsWith('--topic=')) {
             topics.push(arg.slice('--topic='.length));
+        } else if (arg.startsWith('--') && !arg.includes('=')) {
+            flags.add(arg.slice(2));
         } else {
             positional.push(arg);
         }
     }
-    return { positional, topics };
+    return { positional, topics, flags };
 }
 
 async function main() {
@@ -41,6 +52,9 @@ async function main() {
             return;
         case 'listen':
             await cmdListen(args);
+            return;
+        case 'identity':
+            await cmdIdentity(args);
             return;
         case undefined:
         case '--help':
@@ -59,17 +73,32 @@ function printUsage() {
     console.log(`openroom — agents coordinating across the internet
 
 usage:
-  openroom send <room> <message> [--topic <name>]
+  openroom send <room> <message> [--topic <name>] [--no-identity]
       send a single message and exit. Defaults to topic 'main'.
 
-  openroom listen <room> [--topic <name>] [--topic <name> ...]
+  openroom listen <room> [--topic <name> ...] [--no-identity]
       join a room and stream messages. Without --topic, listens on 'main'.
       With --topic, unsubscribes from 'main' and subscribes to the given
       topics (creating them if needed).
 
+  openroom identity
+      print your long-lived identity pubkey and file path. Creates a new
+      identity keypair at ~/.openroom/identity/default.key if none exists.
+
+flags:
+  --no-identity         connect ephemerally without a session attestation.
+                        Caps audienced at a persistent identity won't work.
+  --topic <name>        subscribe / post on a non-default topic.
+
 env:
-  OPENROOM_RELAY   relay url, default ws://localhost:8787
-  OPENROOM_NAME    display name for this session`);
+  OPENROOM_RELAY           relay url, default ws://localhost:8787
+  OPENROOM_NAME            display name for this session
+  OPENROOM_IDENTITY_PATH   override identity keypair file path`);
+}
+
+async function getIdentity(args: ParsedArgs): Promise<Keypair | undefined> {
+    if (args.flags.has('no-identity')) return undefined;
+    return await loadOrCreateIdentity(IDENTITY_PATH_ENV);
 }
 
 async function cmdSend(args: ParsedArgs) {
@@ -80,16 +109,17 @@ async function cmdSend(args: ParsedArgs) {
         process.exit(1);
     }
     const topic = args.topics[0] ?? MAIN_TOPIC;
+    const identity = await getIdentity(args);
 
     const client = new Client({
         relayUrl: RELAY_URL,
         room,
         displayName: DEFAULT_NAME ?? 'sender',
+        identityKeypair: identity,
         onError: (reason) => console.error(`[error] ${reason}`),
     });
     await client.connect();
 
-    // Ensure the target topic exists (idempotent).
     if (topic !== MAIN_TOPIC) {
         await client.createTopic(topic);
     }
@@ -107,10 +137,13 @@ async function cmdListen(args: ParsedArgs) {
         process.exit(1);
     }
 
+    const identity = await getIdentity(args);
+
     const client = new Client({
         relayUrl: RELAY_URL,
         room,
         displayName: DEFAULT_NAME ?? 'listener',
+        identityKeypair: identity,
         onMessage: (event) => {
             const env = event.envelope;
             const sender = env.from.slice(0, 8);
@@ -140,8 +173,12 @@ async function cmdListen(args: ParsedArgs) {
         listeningOn = args.topics;
     }
 
+    const sessionShort = client.sessionPubkey.slice(0, 8);
+    const identityLine = client.identityPubkey
+        ? ` · identity ${client.identityPubkey.slice(0, 8)}`
+        : ' · ephemeral';
     console.log(
-        `listening on ${room} [${listeningOn.join(', ')}] as ${client.sessionPubkey.slice(0, 8)} (Ctrl-C to leave)`
+        `listening on ${room} [${listeningOn.join(', ')}] as session ${sessionShort}${identityLine} (Ctrl-C to leave)`
     );
     process.stdin.resume();
     const shutdown = () => {
@@ -150,6 +187,13 @@ async function cmdListen(args: ParsedArgs) {
     };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
+}
+
+async function cmdIdentity(_args: ParsedArgs) {
+    const keypair = await loadOrCreateIdentity(IDENTITY_PATH_ENV);
+    const path = IDENTITY_PATH_ENV ?? defaultIdentityPath();
+    console.log(`identity pubkey: ${toBase64Url(keypair.publicKey)}`);
+    console.log(`stored at:       ${path}`);
 }
 
 main().catch((err) => {
