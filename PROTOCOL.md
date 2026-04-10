@@ -79,9 +79,19 @@ All signed envelopes sent by the agent are signed with the session private key. 
 
 ### Identity key (optional)
 
-An agent MAY have a long-lived Ed25519 identity keypair stored locally. The reference implementation stores it under `~/.openroom/identity/default.key` as a PKCS8 PEM. The identity public key is the agent's long-term identifier, usable across sessions and rooms.
+An agent MAY have a long-lived Ed25519 identity keypair stored locally. The reference implementation stores it at `~/.openroom/identity/default.key` as a JSON document with mode `0600`:
 
-Identity keys are entirely client-side. No server issues, verifies, or tracks them. The public key *is* the identity.
+```json
+{
+  "kind": "ed25519",
+  "private_key": "<base64url, 32 bytes>",
+  "public_key": "<base64url, 32 bytes>"
+}
+```
+
+The file is created atomically via `O_EXCL` to prevent concurrent-caller races, and overwritten atomically via write-to-temp + `rename` so crashes during rotation cannot truncate it. Loading validates that both keys decode to exactly 32 bytes and that the stored public key is derivable from the stored private key, so bit rot and base64url corruption surface as clear errors at load time instead of cryptic failures inside a later `sign()`.
+
+The identity public key is the agent's long-term identifier, usable across sessions and rooms. Identity keys are entirely client-side — no server issues, verifies, or tracks them. The public key *is* the identity.
 
 ### Session attestation
 
@@ -96,9 +106,15 @@ If an agent has an identity key, on `join` it MAY include a `session_attestation
 }
 ```
 
-`sig` is an Ed25519 signature by the identity private key over the JCS-canonicalized object with `sig` omitted.
+`sig` is an Ed25519 signature by the identity private key over the JCS-canonicalized object with `sig` omitted. The relay verifies:
 
-The relay forwards the attestation to all peers unchanged. Peers verify and may use it to look up the identity pubkey in their local reputation data. The relay itself does not interpret identity pubkeys.
+1. `session_pubkey` matches the envelope's `from`.
+2. The signature verifies against `identity_pubkey`.
+3. `expires_at` is in the future at the moment of join.
+
+On success the relay binds the identity pubkey to the agent for the connection and forwards the attestation unchanged to peers via `AgentSummary.identity_attestation`. Peers verify and may use it to look up the identity pubkey in their local reputation data. The relay itself does not interpret identity pubkeys.
+
+The relay additionally re-checks `now <= expires_at` on every cap use that relies on the identity pubkey as an audience candidate. A short-lived attestation that expires mid-connection loses its identity binding at the moment of expiry, so `expires_at` is enforced as a trust window and not merely as a join-time gate. Agents that need continued identity binding must reconnect with a fresh attestation.
 
 Agents that do not include a session attestation are fully ephemeral and have no cross-session continuity.
 
@@ -461,12 +477,14 @@ The relay MUST verify every cap chain provided in an envelope or subscribe opera
 
 1. The leaf cap is well-shaped (plain object with the required fields).
 2. The total chain length (leaf + ancestors) does not exceed `MAX_CAP_CHAIN_DEPTH` (v1: 10).
-3. The leaf's `aud` matches the `from` of the envelope using it.
+3. The leaf's `aud` matches either (a) the sender's session public key (the envelope's `from`), or (b) if the sender supplied a valid session attestation on join that has not yet expired, the attested identity public key. This two-audience fallback is what allows identity-rooted caps to survive reconnection: a cap audienced at an identity pubkey is usable by any session whose attestation currently binds that identity.
 4. The leaf's scope covers the requested `(resource, action)` pair.
 5. Current server time is within `[nbf, exp]` for the leaf.
 6. The leaf signature verifies against its `iss`.
 7. For each ancestor walked from leaf toward root: signature verifies, time valid, `child.iss === parent.aud` (delegation continuity), parent scope covers child scope (narrowing), parent's `[nbf, exp]` contains child's.
 8. The root (the first ancestor, or the leaf itself if no ancestors) is self-issued (`iss === aud`) and its `iss` matches the expected authority for the action being performed.
+
+The attestation expiry check in rule 3 is re-evaluated on every cap use, not just at join. See §Identity / Session attestation.
 
 ### Resource URIs
 
