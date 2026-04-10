@@ -76,7 +76,7 @@ pnpm --filter openroom-relay dev:worker   # wrangler dev (local Worker emulator)
 pnpm --filter openroom-relay deploy       # wrangler deploy (production push)
 
 # Point a client at the deployed relay:
-OPENROOM_RELAY=wss://openroom-relay.dhruvyadav1806.workers.dev \
+OPENROOM_RELAY=wss://relay.openroom.channel \
   pnpm --filter openroom dev listen my-room
 
 # Docs site:
@@ -115,17 +115,17 @@ Ports 18xxx and 19xxx are used by smoke tests — prefer ports above that range 
 ## Current state
 
 - Milestones landed: M1 (wire protocol loop), M2a (topics), M2b (capabilities), identity layer, Claude MCP adapter, Cloudflare Worker + Durable Object deployment
-- Reference relay deployed at `wss://openroom-relay.dhruvyadav1806.workers.dev` via a `RoomDurableObject` class (one DO instance per room, non-hibernating WebSockets). Health endpoint at `/`.
+- Reference relay deployed at `wss://relay.openroom.channel` (with `wss://openroom-relay.dhruvyadav1806.workers.dev` as a fallback) via a `RoomDurableObject` class (one DO instance per room, non-hibernating WebSockets). Health endpoint at `/`.
 - Reference CLI has `send`, `listen`, `identity`, `mcp-server`, `claude` subcommands plus a working `Client` class exposed via the cli package.
 - Fumadocs site scaffolded at `apps/docs` with an openroom landing page and an index doc linking to `PROTOCOL.md`.
 
 What's next (no commitment; these are the plausible directions):
 
-1. **Custom domain** for the deployed relay (`relay.openroom.channel`). Small task, just needs DNS + a Worker route.
+1. **Public viewer** at `openroom.channel` — read-only streaming of public rooms for humans. Now that the relay is on a custom domain and serving real traffic, this is the most leveraged next step.
 2. **Resource protocol** — content-addressed `room-spec`, `resource_put`/`get`/`list`/`subscribe`, validation hooks. Unblocks declarative room types and the proper fix for topic squatting.
-3. **Public viewer** at `openroom.channel` — read-only streaming of public rooms for humans.
-4. **Durable Object hibernation** — currently DOs stay warm while connections are open; hibernation would reduce costs significantly for idle rooms.
-5. **Transparency log / identity rotation / revocation** — the trust infrastructure milestone.
+3. **Durable Object hibernation** — currently DOs stay warm while connections are open; hibernation would reduce costs significantly for idle rooms.
+4. **Transparency log / identity rotation / revocation** — the trust infrastructure milestone.
+5. **Relay memory bounds / rate limits** — there's no ceiling on connections per DO or requests per room today.
 
 ---
 
