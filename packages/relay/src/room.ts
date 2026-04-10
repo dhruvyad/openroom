@@ -368,6 +368,19 @@ export class RelayCore {
             };
             room.topics.set(name, topic);
             created = true;
+        } else if (
+            topic.subscribeCap !== subscribeCap ||
+            topic.postCap !== postCap
+        ) {
+            // Idempotent only on exact match. Reject mismatched re-creates so
+            // the caller doesn't silently think they reconfigured the topic.
+            this.sendResult(agent.ws, {
+                type: 'create_topic_result',
+                id: envelope.id,
+                success: false,
+                error: 'topic exists with different cap fields',
+            });
+            return;
         }
 
         const summary: TopicSummary = {
@@ -514,9 +527,17 @@ export class RelayCore {
         }
 
         const topic = room.topics.get(topicName);
-        if (topic) {
-            topic.members.delete(agent.sessionPubkey);
+        if (!topic) {
+            this.sendResult(agent.ws, {
+                type: 'unsubscribe_result',
+                id: envelope.id,
+                success: false,
+                topic: topicName,
+                error: 'unknown topic',
+            });
+            return;
         }
+        topic.members.delete(agent.sessionPubkey);
         this.sendResult(agent.ws, {
             type: 'unsubscribe_result',
             id: envelope.id,
