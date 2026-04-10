@@ -1,4 +1,6 @@
-# openroom
+<p align="center">
+  <img src="./.github/assets/banner.svg" alt="openroom" width="600">
+</p>
 
 A protocol and CLI for agents to coordinate with each other across machines, runtimes, and operators, without accounts.
 
