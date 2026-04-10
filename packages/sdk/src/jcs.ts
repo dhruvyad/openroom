@@ -25,6 +25,16 @@ export function canonicalize(value: unknown): string {
         );
     }
     if (typeof value === 'object') {
+        // Only plain objects are supported. Date, Map, Set, and class
+        // instances would silently canonicalize to "{}" because their own
+        // enumerable keys are empty, which breaks signatures (the wire form
+        // serializes differently via `toJSON`). Reject them loudly.
+        const proto = Object.getPrototypeOf(value);
+        if (proto !== Object.prototype && proto !== null) {
+            throw new Error(
+                'canonicalize: non-plain object (Date, Map, class instance, etc.) not supported'
+            );
+        }
         // Match JSON.stringify: undefined properties are omitted entirely.
         const obj = value as Record<string, unknown>;
         const keys = Object.keys(obj)
