@@ -1,7 +1,9 @@
 import type { WebSocket } from 'ws';
 import {
+    verifyCapChain,
     verifyEnvelope,
     type AgentSummary,
+    type Cap,
     type CreateTopicPayload,
     type Envelope,
     type JoinPayload,
@@ -248,6 +250,24 @@ export class RelayCore {
             return;
         }
 
+        if (topic.postCap !== null) {
+            const check = this.checkCap(
+                envelope.payload.cap_proof,
+                agent.sessionPubkey,
+                topic.postCap,
+                roomName,
+                topicName,
+                'post'
+            );
+            if (!check.ok) {
+                this.sendError(
+                    agent.ws,
+                    `post denied: ${check.reason ?? 'no valid cap'}`
+                );
+                return;
+            }
+        }
+
         const event: ServerEvent = {
             type: 'message',
             room: roomName,
@@ -288,19 +308,21 @@ export class RelayCore {
             return;
         }
 
-        // Fail-closed: capability enforcement is not implemented in v1/M2a.
-        // Accepting non-null cap fields would create the illusion of
-        // enforcement while the relay ignores them. Reject explicitly until
-        // M2b wires real UCAN chain verification.
+        // Cap fields, if present, are the base64url pubkey of the topic's
+        // root authority. They must be strings (or null); we do not further
+        // validate pubkey shape here — invalid keys simply fail chain
+        // verification later when someone tries to present a proof.
+        const subscribeCap = envelope.payload.subscribe_cap ?? null;
+        const postCap = envelope.payload.post_cap ?? null;
         if (
-            envelope.payload.subscribe_cap != null ||
-            envelope.payload.post_cap != null
+            (subscribeCap !== null && typeof subscribeCap !== 'string') ||
+            (postCap !== null && typeof postCap !== 'string')
         ) {
             this.sendResult(agent.ws, {
                 type: 'create_topic_result',
                 id: envelope.id,
                 success: false,
-                error: 'capabilities not yet implemented',
+                error: 'cap fields must be pubkey strings or null',
             });
             return;
         }
@@ -310,8 +332,8 @@ export class RelayCore {
         if (!topic) {
             topic = {
                 name,
-                subscribeCap: null,
-                postCap: null,
+                subscribeCap,
+                postCap,
                 members: new Set(),
             };
             room.topics.set(name, topic);
@@ -389,6 +411,27 @@ export class RelayCore {
                 error: 'unknown topic',
             });
             return;
+        }
+
+        if (topic.subscribeCap !== null) {
+            const check = this.checkCap(
+                envelope.payload.proof,
+                agent.sessionPubkey,
+                topic.subscribeCap,
+                roomName,
+                topicName,
+                'subscribe'
+            );
+            if (!check.ok) {
+                this.sendResult(agent.ws, {
+                    type: 'subscribe_result',
+                    id: envelope.id,
+                    success: false,
+                    topic: topicName,
+                    error: `subscribe denied: ${check.reason ?? 'no valid cap'}`,
+                });
+                return;
+            }
         }
 
         topic.members.add(agent.sessionPubkey);
@@ -550,6 +593,27 @@ export class RelayCore {
 
     private sendError(ws: WebSocket, reason: string) {
         this.sendEvent(ws, { type: 'error', reason });
+    }
+
+    private checkCap(
+        proof: Cap | undefined,
+        audience: string,
+        expectedRoot: string,
+        roomName: string,
+        topicName: string,
+        action: 'subscribe' | 'post'
+    ): { ok: boolean; reason?: string } {
+        if (!proof || typeof proof !== 'object') {
+            return { ok: false, reason: 'missing cap proof' };
+        }
+        const resource = `room:${roomName}/topic:${topicName}`;
+        return verifyCapChain(proof, {
+            expectedAudience: audience,
+            expectedRoot,
+            requiredResource: resource,
+            requiredAction: action,
+            now: Math.floor(Date.now() / 1000),
+        });
     }
 
     private snapshotAgents(room: Room): AgentSummary[] {
