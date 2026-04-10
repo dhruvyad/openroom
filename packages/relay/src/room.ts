@@ -444,23 +444,29 @@ export class RelayCore {
     }
 
     private handleLeave(agent: Agent, roomName: string) {
-        const room = this.rooms.get(roomName);
-        if (!room) return;
-        if (room.agents.get(agent.sessionPubkey) !== agent) return;
+        try {
+            const room = this.rooms.get(roomName);
+            if (!room) return;
+            if (room.agents.get(agent.sessionPubkey) !== agent) return;
 
-        for (const topic of room.topics.values()) {
-            topic.members.delete(agent.sessionPubkey);
-        }
-        room.agents.delete(agent.sessionPubkey);
+            for (const topic of room.topics.values()) {
+                topic.members.delete(agent.sessionPubkey);
+            }
+            room.agents.delete(agent.sessionPubkey);
 
-        if (room.agents.size === 0) {
-            this.rooms.delete(roomName);
-            return;
+            if (room.agents.size === 0) {
+                this.rooms.delete(roomName);
+                return;
+            }
+            this.broadcastToRoom(room, {
+                type: 'agents_changed',
+                agents: this.snapshotAgents(room),
+            });
+        } finally {
+            // Honor the leave by dropping the socket. Safe if already closed;
+            // .close() is a no-op on a closed or closing ws.
+            agent.ws.close();
         }
-        this.broadcastToRoom(room, {
-            type: 'agents_changed',
-            agents: this.snapshotAgents(room),
-        });
     }
 
     private ensureRoom(roomName: string): Room {
