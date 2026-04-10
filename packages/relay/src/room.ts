@@ -8,6 +8,7 @@ import {
     type AgentSummary,
     type Cap,
     type CreateTopicPayload,
+    type DirectPayload,
     type Envelope,
     type JoinPayload,
     type ListTopicsPayload,
@@ -497,6 +498,13 @@ export class RelayCore {
                     envelope as Envelope<SendPayload>
                 );
                 return;
+            case 'direct':
+                this.handleDirect(
+                    agent,
+                    roomName,
+                    envelope as Envelope<DirectPayload>
+                );
+                return;
             case 'leave':
                 this.handleLeave(agent, roomName);
                 return;
@@ -760,6 +768,86 @@ export class RelayCore {
         // envelope id instead of inferring from the absence of an error.
         this.sendResult(agent.ws, {
             type: 'send_result',
+            id: envelope.id,
+            success: true,
+        });
+    }
+
+    /**
+     * Handle a direct envelope. Semantics: DMs are room-wide broadcasts with
+     * a target tag, not private routing. Every agent in the room — including
+     * viewers and other participants — receives the direct_message event.
+     * The `target` field is a UI hint identifying the intended recipient,
+     * not a routing constraint. This is deliberate: openroom's mission is
+     * observable multi-agent coordination, and a private side-channel would
+     * be the opposite of that. Adversarial agents can't use DMs as a hidden
+     * back-channel because there is no hidden channel.
+     *
+     * Target existence is still verified: the relay rejects a DM whose
+     * target isn't currently present in the room. This keeps the `target`
+     * field meaningful (you can't DM nobody) and lets senders handle
+     * missing-recipient errors cleanly.
+     */
+    private handleDirect(
+        agent: Agent,
+        roomName: string,
+        envelope: Envelope<DirectPayload>
+    ) {
+        const fail = (error: string) => {
+            this.sendResult(agent.ws, {
+                type: 'direct_result',
+                id: envelope.id,
+                success: false,
+                error,
+            });
+        };
+
+        if (!agent.joined) return fail('not joined');
+        const room = this.rooms.get(roomName);
+        if (!room) return fail('unknown room');
+
+        const target = envelope.payload?.target;
+        if (typeof target !== 'string' || target.length === 0) {
+            return fail('invalid target');
+        }
+        if (typeof envelope.payload?.body !== 'string') {
+            return fail('body must be a string');
+        }
+
+        // Resolve the target against the room's agent set. Matches either
+        // by session pubkey (the direct case) or by attested identity
+        // pubkey (so you can DM a persistent identity whose current
+        // session you don't know). Same two-audience fallback we use for
+        // cap checks.
+        let targetFound = false;
+        for (const other of room.agents.values()) {
+            if (!other.joined) continue;
+            if (other.sessionPubkey === target) {
+                targetFound = true;
+                break;
+            }
+            if (
+                other.identityPubkey !== undefined &&
+                other.identityPubkey === target
+            ) {
+                targetFound = true;
+                break;
+            }
+        }
+        if (!targetFound) return fail('target not in room');
+
+        const event: ServerEvent = {
+            type: 'direct_message',
+            room: roomName,
+            envelope,
+        };
+        // Room-wide broadcast: every joined agent receives the DM event.
+        // Exclude the sender since they already see their own action via
+        // the direct_result ack.
+        this.broadcastToRoom(room, event, agent.sessionPubkey);
+
+        this.sendResult(agent.ws, {
+            type: 'direct_result',
             id: envelope.id,
             success: true,
         });
