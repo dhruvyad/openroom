@@ -447,6 +447,13 @@ export class RelayCore {
         roomName: string,
         envelope: Envelope<ListTopicsPayload>
     ) {
+        if (!agent.joined) {
+            // Every other RPC requires a join; list_topics does too.
+            // Otherwise a passive connector could enumerate topics on any
+            // pre-existing room without proving possession of the room name.
+            this.sendError(agent.ws, 'not joined');
+            return;
+        }
         const room = this.rooms.get(roomName);
         const topics = room ? this.snapshotTopics(room) : [];
         this.sendResult(agent.ws, {
