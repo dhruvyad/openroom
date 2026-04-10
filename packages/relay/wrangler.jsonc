@@ -16,6 +16,10 @@
             {
                 "name": "ROOM_DO",
                 "class_name": "RoomDurableObject"
+            },
+            {
+                "name": "DIRECTORY_DO",
+                "class_name": "DirectoryDurableObject"
             }
         ]
     },
@@ -23,6 +27,10 @@
         {
             "tag": "v1",
             "new_sqlite_classes": ["RoomDurableObject"]
+        },
+        {
+            "tag": "v2",
+            "new_sqlite_classes": ["DirectoryDurableObject"]
         }
     ],
     "observability": {

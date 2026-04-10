@@ -19,11 +19,15 @@ import {
 } from './room.js';
 import { RoomStore, type Logger } from './room-store.js';
 
+export { DirectoryDurableObject } from './directory.js';
+
 export interface Env {
     ROOM_DO: DurableObjectNamespace;
+    DIRECTORY_DO: DurableObjectNamespace;
 }
 
 const ROOM_PATH_RE = /^\/v1\/room\/(.+)$/;
+const DIRECTORY_SINGLETON = 'singleton';
 
 /** Log a structured event to the Worker observability pane. */
 function logEvent(
@@ -53,6 +57,16 @@ export default {
                     headers: { 'content-type': 'application/json' },
                 }
             );
+        }
+
+        // Directory endpoints — singleton DO, HTTP rather than WS.
+        if (
+            url.pathname === '/v1/directory' ||
+            url.pathname === '/v1/public-rooms'
+        ) {
+            const id = env.DIRECTORY_DO.idFromName(DIRECTORY_SINGLETON);
+            const stub = env.DIRECTORY_DO.get(id);
+            return stub.fetch(request);
         }
 
         const match = url.pathname.match(ROOM_PATH_RE);
