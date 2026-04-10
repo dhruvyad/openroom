@@ -116,6 +116,39 @@ export interface ResourceUnsubscribePayload {
     name: string;
 }
 
+// ----- directory (public rooms listing) -----
+
+export interface AnnouncePayload {
+    /** room name being announced */
+    room: string;
+    /** human-readable description shown in the directory UI */
+    description: string;
+    /** unix seconds; the directory expires the announcement at this time */
+    expires_at: number;
+    /** reserved for future cap-gated policy modes; ignored in v1 open/authority modes */
+    cap_proof?: Cap;
+}
+
+export interface UnannouncePayload {
+    room: string;
+}
+
+export type ListPublicRoomsPayload = Record<string, never>;
+
+/**
+ * A public room entry in the directory. Carries the announcer's session
+ * pubkey (always) and identity pubkey (if they attested) so viewers can
+ * eyeball who published the listing and make their own trust decisions.
+ */
+export interface AnnouncementSummary {
+    room: string;
+    description: string;
+    announcer_session: string;
+    announcer_identity?: string;
+    announced_at: number;
+    expires_at: number;
+}
+
 // ----- relay → client events -----
 
 export interface ChallengeEvent {
@@ -256,6 +289,28 @@ export interface ResourceUnsubscribeResult {
     error?: string;
 }
 
+export interface AnnounceResult {
+    type: 'announce_result';
+    id: string;
+    success: boolean;
+    summary?: AnnouncementSummary;
+    error?: string;
+}
+
+export interface UnannounceResult {
+    type: 'unannounce_result';
+    id: string;
+    success: boolean;
+    room: string;
+    error?: string;
+}
+
+export interface ListPublicRoomsResult {
+    type: 'list_public_rooms_result';
+    id: string;
+    rooms: AnnouncementSummary[];
+}
+
 export interface ErrorEvent {
     type: 'error';
     reason: string;
@@ -281,4 +336,7 @@ export type ServerEvent =
     | ResourceListResult
     | ResourceSubscribeResult
     | ResourceUnsubscribeResult
+    | AnnounceResult
+    | UnannounceResult
+    | ListPublicRoomsResult
     | ErrorEvent;
