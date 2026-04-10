@@ -14,6 +14,8 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import * as ed from '@noble/ed25519';
+
 import { canonicalize } from './jcs.js';
 import {
     fromBase64Url,
@@ -23,6 +25,8 @@ import {
     verify,
     type Keypair,
 } from './crypto.js';
+
+const ED25519_KEY_LENGTH = 32;
 
 const encoder = new TextEncoder();
 
@@ -110,7 +114,13 @@ export function defaultIdentityPath(): string {
     return path.join(os.homedir(), '.openroom', 'identity', 'default.key');
 }
 
-/** Load an identity keypair from disk. Returns null if no file exists. */
+/**
+ * Load an identity keypair from disk. Returns null if no file exists.
+ * Validates that both keys decode to exactly 32 bytes, and that the stored
+ * public key is actually derivable from the stored private key — catches
+ * truncated files, base64url corruption, and bitflips at load time instead
+ * of deep inside a later `sign()` call.
+ */
 export async function loadIdentity(
     filePath?: string
 ): Promise<Keypair | null> {
@@ -122,14 +132,57 @@ export async function loadIdentity(
         if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
         throw err;
     }
-    const stored: StoredIdentity = JSON.parse(raw);
-    if (stored.kind !== 'ed25519') {
-        throw new Error(`unsupported identity key kind: ${stored.kind}`);
+    let stored: StoredIdentity;
+    try {
+        stored = JSON.parse(raw);
+    } catch (err) {
+        throw new Error(
+            `identity file at ${p} is not valid JSON: ${(err as Error).message}`
+        );
     }
-    return {
-        privateKey: fromBase64Url(stored.private_key),
-        publicKey: fromBase64Url(stored.public_key),
-    };
+    if (stored.kind !== 'ed25519') {
+        throw new Error(
+            `identity file at ${p} has unsupported kind: ${stored.kind}`
+        );
+    }
+    if (
+        typeof stored.private_key !== 'string' ||
+        typeof stored.public_key !== 'string'
+    ) {
+        throw new Error(`identity file at ${p} missing key fields`);
+    }
+
+    const privateKey = fromBase64Url(stored.private_key);
+    const publicKey = fromBase64Url(stored.public_key);
+    if (privateKey.length !== ED25519_KEY_LENGTH) {
+        throw new Error(
+            `identity file at ${p} private_key is ${privateKey.length} bytes, expected ${ED25519_KEY_LENGTH}`
+        );
+    }
+    if (publicKey.length !== ED25519_KEY_LENGTH) {
+        throw new Error(
+            `identity file at ${p} public_key is ${publicKey.length} bytes, expected ${ED25519_KEY_LENGTH}`
+        );
+    }
+
+    // Integrity check: the stored public key must match the derivation from
+    // the stored private key. Catches bitflips and tampering that leave
+    // lengths intact.
+    const derived = ed.getPublicKey(privateKey);
+    if (!bytesEqual(derived, publicKey)) {
+        throw new Error(
+            `identity file at ${p} has mismatched private/public keys (corruption?)`
+        );
+    }
+
+    return { privateKey, publicKey };
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!;
+    return diff === 0;
 }
 
 /**
