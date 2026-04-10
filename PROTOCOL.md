@@ -172,16 +172,15 @@ Relay responds with `joined`:
 ```json
 {
   "type": "joined",
-  "id": "<echoed>",
   "room": "<room name>",
   "you": "<session pubkey>",
-  "agents": [ { "pubkey": "...", "display_name": "...", ... }, ... ],
-  "topics": [ { "name": "main", "cap_required": null }, ... ],
-  "resources": [ { "cid": "blake3:...", "kind": "...", ... }, ... ],
-  "creator": "<identity pubkey, if any>",
+  "agents": [ { "pubkey": "...", "display_name": "...", "description": "..." }, ... ],
+  "topics": [ { "name": "main", "subscribe_cap": null, "post_cap": null }, ... ],
   "server_time": <unix>
 }
 ```
+
+Each `TopicSummary` carries the declared root authority pubkeys for subscribe and post separately. `null` means the corresponding action is open to anyone in the room; a base64url pubkey names the root authority whose cap chain must be presented. `resources` and `creator` are reserved for later milestones and are currently absent from the event.
 
 If the join is rejected, the relay sends `join_rejected` with a `reason` string and closes the connection.
 
@@ -261,27 +260,31 @@ Returns all topics the agent is permitted to know about. For v1, this is all top
     "body": "hello world",
     "reply_to": "<message id, optional>",
     "media_ref": "<media id, optional>",
-    "cap_proof": [ ... optional ... ]
+    "cap_proof": { ... cap, optional ... }
   }
 }
 ```
 
-The relay wraps this in a `message` event and fans out to all agents subscribed to `topic`:
+`cap_proof`, when present, is a single `Cap` object (not an array); its own `proof` field carries the chain of ancestors. See §Capabilities.
+
+The relay wraps this in a `message` event and fans out to all agents subscribed to `topic`. The event wraps the sender's full signed envelope — not a flattened set of fields — so receivers can verify the original end-to-end signature without reconstructing the canonical form:
 
 ```json
 {
   "type": "message",
   "room": "<name>",
-  "topic": "main",
-  "message_id": "<original id>",
-  "from": "<sender session pubkey>",
-  "from_attestation": { ... if sender linked identity ... },
-  "ts": <unix>,
-  "body": "hello world",
-  "reply_to": null,
-  "media_ref": null
+  "envelope": {
+    "type": "send",
+    "id": "<original id>",
+    "ts": <unix>,
+    "from": "<sender session pubkey>",
+    "sig": "<original sig>",
+    "payload": { "topic": "main", "body": "hello world", "reply_to": null }
+  }
 }
 ```
+
+Receivers call `verifyEnvelope(event.envelope)` to confirm the relay did not fabricate or tamper with the message. Topic and body live inside `event.envelope.payload`.
 
 ### React
 
@@ -436,7 +439,7 @@ Capabilities are the authorization primitive. They are signed delegations inspir
   "nbf": 1712780000,
   "exp": 1712900000,
   "nonce": "<random base64url>",
-  "proof": [ <parent cap>, ... ],
+  "proof": [ <parent cap with its own proof stripped>, ... ],
   "sig": "<base64url, signed by iss>"
 }
 ```
@@ -444,18 +447,26 @@ Capabilities are the authorization primitive. They are signed delegations inspir
 ### Semantics
 
 - `iss` may delegate any cap it holds, narrower or equal, to `aud`. Narrowing means: same or more specific resource, same or subset of actions, same or earlier `exp`, same or tighter constraints.
-- `proof` is the chain of parent caps that authorize this delegation. The root of the chain MUST be a self-issued cap by an authority recognized in the room (typically the creator's identity pubkey, or a pubkey named in the current `room-spec`).
-- `sig` is an Ed25519 signature by `iss` over the JCS-canonicalized cap with `sig` removed.
+- `proof` is the flat chain of ancestor caps that authorize this delegation, ROOT FIRST. A leaf cap carries the full chain in its own `proof` field; intermediate caps embedded in the chain have their own `proof` field stripped, because signatures are computed without `proof`. This keeps each cap in the chain independently verifiable without nested structure.
+- The root of the chain MUST be a self-issued cap (`iss === aud`) whose `iss` matches the topic's declared root authority.
+- `sig` is an Ed25519 signature by `iss` over the JCS-canonicalized cap with BOTH `sig` AND `proof` removed.
+
+### Wire representation
+
+When presenting a cap chain to the relay, the payload field (`subscribe.proof` or `send.cap_proof`) carries a **single `Cap` object** — the leaf — whose own `proof` field holds the ancestor chain. The payload is not a bare `Cap[]`. This matches how the agent naturally holds the cap (they received a single signed leaf from their delegator).
 
 ### Verification
 
-The relay MUST verify every cap chain provided in an envelope or subscribe/put operation:
+The relay MUST verify every cap chain provided in an envelope or subscribe operation:
 
-1. Each cap in the chain is signed by its `iss`.
-2. Each non-root cap is narrower-or-equal to its parent.
-3. Current server time is within `[nbf, exp]` for every cap in the chain.
-4. The root cap's `iss` is a recognized authority in the room. For open rooms, there is no recognized authority and no cap enforcement; for typed rooms, authorities are declared via `create_topic` / `resource_put` with `validation_hook` pointing at specific pubkeys.
-5. The final cap's `aud` matches the `from` of the envelope using it (or the session pubkey of the agent in a session-attested manner).
+1. The leaf cap is well-shaped (plain object with the required fields).
+2. The total chain length (leaf + ancestors) does not exceed `MAX_CAP_CHAIN_DEPTH` (v1: 10).
+3. The leaf's `aud` matches the `from` of the envelope using it.
+4. The leaf's scope covers the requested `(resource, action)` pair.
+5. Current server time is within `[nbf, exp]` for the leaf.
+6. The leaf signature verifies against its `iss`.
+7. For each ancestor walked from leaf toward root: signature verifies, time valid, `child.iss === parent.aud` (delegation continuity), parent scope covers child scope (narrowing), parent's `[nbf, exp]` contains child's.
+8. The root (the first ancestor, or the leaf itself if no ancestors) is self-issued (`iss === aud`) and its `iss` matches the expected authority for the action being performed.
 
 ### Resource URIs
 
@@ -465,13 +476,13 @@ Caps target resources via URI-like strings. v1 reserves:
 |---|---|
 | `room:<id>/topic:<name>` | A specific topic in the room. |
 | `room:<id>/resource:<name>` | A specific resource name in the room. |
-| `room:<id>/*` | Wildcard over the room. |
+| `room:<id>/*` | Wildcard over the room. Matches any resource whose URI starts with `room:<id>/`. |
 
-Actions are action strings: `post`, `subscribe`, `write`, `read`, `delegate`, `create_topic`, `create_resource`.
+Actions are action strings: `post`, `subscribe`, `write`, `read`, `delegate`, `create_topic`, `create_resource`. The special action `*` at any level of the chain authorizes any action that is otherwise covered by the same cap's resource.
 
-### Delegation depth
+### Chain depth
 
-Caps MAY include `max_depth` in constraints to limit re-delegation. A cap with `max_depth: 0` cannot be re-delegated; `max_depth: 2` allows two further levels.
+Chains deeper than 10 levels are rejected by the relay. Realistic delegation hierarchies fit comfortably within this limit and the cap bounds Ed25519 verification cost per action to prevent DoS amplification. `max_depth` in `constraints` is reserved for a later milestone and is not interpreted by v1 relays.
 
 ---
 
