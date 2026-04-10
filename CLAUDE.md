@@ -1,0 +1,138 @@
+# openroom — project guide
+
+openroom is a protocol and CLI for agents to coordinate with each other across machines, runtimes, and operators, without accounts. Anyone who knows a room name can join. Identity within a session is cryptographic (Ed25519), not account-based. Public rooms are observable so multi-agent coordination failures happen where the research community can see them.
+
+This file is for Claude Code sessions working in this repository. It's the fastest way to get oriented. For the authoritative wire protocol, read `PROTOCOL.md`. For observed and accepted risks, read `FAILURE-MODES.md`.
+
+---
+
+## Repo layout
+
+```
+packages/
+  sdk/      — openroom-sdk. Envelope types, Ed25519 signing, JCS canonicalization,
+              BLAKE3, UCAN-style capabilities, session attestations, identity key
+              persistence. Node-only in practice (uses Buffer, node:fs).
+  relay/    — openroom-relay. Node WebSocket server. Mandatory signature
+              verification on every envelope, topic routing, cap enforcement,
+              session attestation validation, global replay dedup, per-room
+              state. Will eventually port to a Cloudflare Durable Object.
+  cli/      — openroom CLI (published as `openroom`). Also exports the `Client`
+              class used by scratch scripts and the eventual Claude adapter.
+              Has `send`, `listen`, `identity` subcommands today.
+apps/
+  docs/     — openroom-docs. Fumadocs v16 / Next.js 15 / Tailwind v4 doc site.
+              `pnpm --filter openroom-docs dev` boots at localhost:3000.
+scripts/
+  smoke-test.sh          — M1: basic send/listen on main
+  topic-smoke-test.sh    — M2a: per-topic isolation
+  cap-smoke-test.sh      — M2b: hierarchical room, adversarial worker
+  identity-smoke-test.sh — identity: cap continuity across reconnects
+PROTOCOL.md         — wire protocol spec. Source of truth for interop.
+FAILURE-MODES.md    — observed failures + accepted-risk decisions.
+README.md           — user-facing entry point.
+```
+
+`sdk` and `relay` are `private: true` workspace packages. At publish time, `cli` will bundle `sdk` into itself via esbuild and ship as a single self-contained `openroom` package on npm (and mirrored as `openroom` on PyPI when the Python SDK lands). The bundling pipeline is not yet wired.
+
+---
+
+## Core concepts — 30-second tour
+
+- **Room**: ephemeral per-name state on the relay. Lazy-created on first join, torn down when the last agent leaves. Room names are the only "secret" in the zero-auth model.
+- **Session key**: fresh Ed25519 keypair generated per WebSocket connection. Signs every envelope. Never persisted.
+- **Identity key** (optional): long-lived Ed25519 keypair persisted at `~/.openroom/identity/default.key` as JSON with mode 0600. The public key *is* the agent's long-term identity.
+- **Session attestation**: signed binding from an identity key to a session pubkey, scoped to a specific room, bounded by `expires_at`. Relay enforces scope + lifetime ceiling (30 days).
+- **Topic**: named sub-stream within a room. Relay only delivers a message to agents subscribed to its topic. Enforcement is relay-side, not cooperative.
+- **Capability**: UCAN-style signed delegation. Leaf carries a flat chain of stripped ancestors via its own `proof` field. Relay walks leaf → root on every cap use, verifying signatures, narrowing, and time windows. Leaf audience matches either the session pubkey or the attested identity pubkey, so identity-rooted caps survive reconnection.
+
+All of the above is spelled out in detail in `PROTOCOL.md`. When in doubt, that's the source of truth — this file is a map, not a reference.
+
+---
+
+## Running things
+
+```bash
+pnpm install                                  # once
+pnpm -r exec tsc --noEmit                     # workspace-wide typecheck
+
+# All four smoke tests (run before every commit that touches protocol code):
+./scripts/smoke-test.sh
+./scripts/topic-smoke-test.sh
+./scripts/cap-smoke-test.sh
+./scripts/identity-smoke-test.sh
+
+# Local dev loop:
+PORT=19000 pnpm --filter openroom-relay dev             # start a relay
+pnpm --filter openroom dev listen my-room               # listener
+pnpm --filter openroom dev send my-room "hi"            # sender
+pnpm --filter openroom dev identity                     # print/create identity
+pnpm --filter openroom dev listen my-room --no-identity # skip identity load
+
+# Docs site:
+pnpm --filter openroom-docs dev                         # Fumadocs dev server
+pnpm --filter openroom-docs build                       # production build
+```
+
+Ports 18xxx and 19xxx are used by smoke tests — prefer ports above that range for ad-hoc dev to avoid collision.
+
+---
+
+## Conventions
+
+- **Conventional commits**: `feat: ...`, `fix: ...`, `docs: ...`, `chore: ...`. Short subjects, imperative mood, lowercase first word, no trailing period. Look at `git log --oneline` for the style.
+- **Small commits**: each one leaves the workspace green (typecheck + relevant smoke tests pass). Don't bundle unrelated changes. If you catch yourself running `git add -A`, stop and check for stray user-added files you didn't intend to include — this has happened.
+- **Smoke tests run before every commit that touches protocol code.** All four should pass. Regressing any of them blocks the commit.
+- **Every signed envelope goes through mandatory signature verification in the relay.** This is load-bearing for topic enforcement, cap verification, and identity attestations. Do not add new envelope types that bypass this.
+- **Tests that don't need identity must use `--no-identity` or an isolated `OPENROOM_IDENTITY_PATH`.** The default CLI path creates `~/.openroom/identity/default.key` on first use — tests should not touch the user's real identity file.
+- **Scratch / probe scripts live inside a workspace package** (e.g. `packages/relay/probe.ts` or `packages/cli/probe.ts`), not at the repo root or in `scripts/`. Node module resolution walks up from the script's file location, and workspace deps only resolve through the package's own `node_modules`. A scratch file at the repo root cannot import `openroom-sdk` or `ws`. Clean up scratch files before committing.
+- **When an agent probe finds issues**, triage them explicitly with severity and effort before asking for green light. Don't silently fix everything; the user wants the call on what's worth the churn.
+
+---
+
+## Gotchas we've already hit
+
+- **Fumadocs scaffolder** (`create-fumadocs-app`) uses a clack-based TUI that reads directly from the raw TTY per prompt. Piping `\n` or `\r` through stdin does not work. Use `expect` to drive it.
+- **Next.js + pnpm workspaces**: `turbopack.root` in `apps/docs/next.config.mjs` must be the monorepo root, not the app directory. Setting it to the app dir makes Next unable to resolve `next/package.json` because the real files live in the pnpm store above.
+- **`@noble/ed25519` v2** requires `sha512` to be injected at import time. Already wired in `packages/sdk/src/crypto.ts` via `ed.etc.sha512Sync = ...`. Don't remove it.
+- **`Buffer.from(s, 'base64url')` silently drops invalid characters** and returns a short buffer instead of throwing. `loadIdentity` compensates by validating key lengths are exactly 32 bytes.
+- **If the working directory gets renamed mid-session** (e.g. `mv openchat openroom`), the Bash tool's persistent cwd wedges on the missing path and every subsequent shell command fails. The only recovery is to restart Claude Code from the new directory.
+- **JCS canonicalization** (`packages/sdk/src/jcs.ts`) rejects non-plain objects (Date, Map, class instances) to avoid silently signing `{}` when the wire format would be something else. Don't put `Date` or `Map` inside anything that gets canonicalized.
+- **Session attestations must be room-scoped.** If you add a new code path that creates attestations, pass the room name as the third argument to `makeSessionAttestation`. The `Client` already does this automatically.
+
+---
+
+## Current state
+
+- Milestones landed: M1 (wire protocol loop), M2a (topics), M2b (capabilities)
+- Identity keys + session attestations with room binding and 30-day lifetime cap
+- Fumadocs site scaffolded at `apps/docs` with an openroom landing page and an index doc linking to `PROTOCOL.md`
+- Reference CLI has `send`, `listen`, `identity` subcommands and a working `Client` class exposed via the cli package
+
+What's next (no commitment; these are the plausible directions):
+
+1. **Claude MCP adapter** — `openroom claude <room>` spawns Claude with the adapter registered as an MCP server. Highest leverage because it turns everything above into actual multi-agent use today.
+2. **Cloudflare Durable Object deployment** — port the Node WS relay to a DO at `relay.openroom.channel`. First real multi-machine usage.
+3. **Resource protocol** — content-addressed `room-spec`, `resource_put`/`get`/`list`/`subscribe`, validation hooks. Unblocks declarative room types and the proper fix for topic squatting.
+
+---
+
+## Deliberately deferred — don't propose fixing these without discussion
+
+- **Identity key rotation / revocation / transparency log**: needs a dedicated "trust infrastructure" milestone. Individual patches here are not useful; it's one subsystem.
+- **Encryption at rest for identity keys**: needs OS keychain integration (macOS Keychain, gnome-keyring, DPAPI). Legitimate future work, not v1.
+- **Broken-symlink write-through in `~/.openroom/identity/`**: requires `O_NOFOLLOW`, awkward in Node, and only matters if the attacker already has local write access to the home dir. Low enough risk to live with.
+- **Topic squatting on a claimed authority pubkey**: documented in `FAILURE-MODES.md` under "Known-accepted risks". Proper fix (proof-of-control at `create_topic`) lands alongside the resource protocol work.
+- **Client-side identity swap mid-connection**: cosmetic. Reconnecting is fine.
+
+If you think any of these is wrong, raise it explicitly with reasoning — don't silently fix them.
+
+---
+
+## Where to get more detail
+
+- Wire format / identity / topics / capabilities / room types → `PROTOCOL.md`
+- Observed failures and accepted risks → `FAILURE-MODES.md`
+- Commit history and design rationale → `git log` (conventional prefixes make it skimmable)
+- End-user framing → `README.md`
+- Documentation site (in progress) → `apps/docs/`
