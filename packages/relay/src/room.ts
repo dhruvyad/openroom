@@ -327,12 +327,20 @@ export class RelayCore {
         });
 
         if (created) {
-            this.broadcastToRoom(room, {
-                type: 'topic_changed',
-                topic: name,
-                change: 'created',
-                summary,
-            });
+            // Exclude the creator from the broadcast: they already received
+            // create_topic_result. Delivering topic_changed on top would mean
+            // a single request yields two events, which makes RPC correlation
+            // fragile for clients that don't eagerly dispatch.
+            this.broadcastToRoom(
+                room,
+                {
+                    type: 'topic_changed',
+                    topic: name,
+                    change: 'created',
+                    summary,
+                },
+                agent.sessionPubkey
+            );
         }
     }
 
