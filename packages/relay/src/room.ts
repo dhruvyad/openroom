@@ -247,6 +247,23 @@ export class RelayCore {
         return this.connections.get(ws);
     }
 
+    /** Read-only access to a named resource in a loaded room. Used by the
+     *  DO for internal cross-DO lookups (e.g. directory-config). */
+    readResource(
+        roomName: string,
+        resourceName: string
+    ): { content: Uint8Array; kind: string; mime: string } | null {
+        const room = this.rooms.get(roomName);
+        if (!room) return null;
+        const resource = room.resources.get(resourceName);
+        if (!resource) return null;
+        return {
+            content: resource.content,
+            kind: resource.kind,
+            mime: resource.mime,
+        };
+    }
+
     /**
      * Bulk-load room state after a hibernation wake. Called from the DO's
      * async initialize() path. Replaces any existing in-memory state for

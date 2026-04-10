@@ -44,6 +44,22 @@ interface StoredAnnouncement {
     expires_at: number;
 }
 
+/**
+ * Directory policy for a room, parsed out of its `directory-config`
+ * resource. Absent / missing resource defaults to open mode.
+ */
+interface DirectoryPolicy {
+    mode: 'open' | 'authority';
+    authority?: string;
+}
+
+interface CachedPolicy {
+    policy: DirectoryPolicy;
+    fetchedAt: number;
+}
+
+const POLICY_CACHE_TTL_SECONDS = 60;
+
 function logEvent(
     level: 'debug' | 'info' | 'warn' | 'error',
     event: string,
@@ -65,9 +81,96 @@ function logEvent(
  */
 export class DirectoryDurableObject {
     private state: DurableObjectState;
+    private env: DirectoryEnv;
+    private policyCache = new Map<string, CachedPolicy>();
 
-    constructor(state: DurableObjectState, _env: DirectoryEnv) {
+    constructor(state: DurableObjectState, env: DirectoryEnv) {
         this.state = state;
+        this.env = env;
+    }
+
+    /**
+     * Fetch the directory policy for a room by calling into its Room DO and
+     * reading the `directory-config` resource. Caches the result for
+     * POLICY_CACHE_TTL_SECONDS so hot announce paths don't incur a cross-DO
+     * round trip on every call.
+     */
+    private async loadPolicy(roomName: string): Promise<DirectoryPolicy> {
+        const now = Math.floor(Date.now() / 1000);
+        const cached = this.policyCache.get(roomName);
+        if (cached && now - cached.fetchedAt < POLICY_CACHE_TTL_SECONDS) {
+            return cached.policy;
+        }
+
+        const policy: DirectoryPolicy = await this.fetchPolicyFromRoom(
+            roomName
+        );
+        this.policyCache.set(roomName, { policy, fetchedAt: now });
+        return policy;
+    }
+
+    private async fetchPolicyFromRoom(
+        roomName: string
+    ): Promise<DirectoryPolicy> {
+        try {
+            const id = this.env.ROOM_DO.idFromName(roomName);
+            const stub = this.env.ROOM_DO.get(id);
+            const url = new URL(
+                `http://internal/__internal/directory-config`
+            );
+            url.searchParams.set('room', roomName);
+            const response = await stub.fetch(url.toString());
+            if (!response.ok) {
+                logEvent('warn', 'openroom.directory_policy_fetch_failed', {
+                    room: roomName,
+                    status: response.status,
+                });
+                return { mode: 'open' };
+            }
+            const payload = (await response.json()) as {
+                present: boolean;
+                content?: string;
+            };
+            if (!payload.present || typeof payload.content !== 'string') {
+                return { mode: 'open' };
+            }
+
+            // The resource content is base64-encoded (not base64url) JSON.
+            const jsonBytes = atob(payload.content);
+            const parsed = JSON.parse(jsonBytes);
+            if (!parsed || typeof parsed !== 'object') {
+                return { mode: 'open' };
+            }
+            if (parsed.mode === 'authority') {
+                if (typeof parsed.authority !== 'string') {
+                    logEvent(
+                        'warn',
+                        'openroom.directory_policy_invalid',
+                        {
+                            room: roomName,
+                            reason: 'authority mode missing pubkey',
+                        }
+                    );
+                    return { mode: 'open' };
+                }
+                return {
+                    mode: 'authority',
+                    authority: parsed.authority,
+                };
+            }
+            return { mode: 'open' };
+        } catch (err) {
+            logEvent('error', 'openroom.directory_policy_fetch_failed', {
+                room: roomName,
+                err: String(err),
+            });
+            return { mode: 'open' };
+        }
+    }
+
+    /** Test-only: invalidate the policy cache for a room. */
+    invalidatePolicyCache(roomName: string): void {
+        this.policyCache.delete(roomName);
     }
 
     async fetch(request: Request): Promise<Response> {
@@ -265,11 +368,33 @@ export class DirectoryDurableObject {
             announcerIdentity = att.identity_pubkey;
         }
 
-        // Authority enforcement via cross-DO room-spec fetch lands in a
-        // follow-up task. For now, v1 stage 1 operates in open mode: any
-        // valid signed announcement succeeds. Squatting is mitigated by
-        // displaying the announcer_session / announcer_identity prominently
-        // in the viewer so researchers can eyeball trust.
+        // Authority enforcement: fetch the room's directory-config
+        // resource (cross-DO call, cached) to determine whether this room
+        // requires an authorized announcer. In open mode, any valid signed
+        // envelope succeeds. In authority mode, the announcer's session
+        // pubkey OR identity pubkey must match the configured authority.
+        const policy = await this.loadPolicy(payload.room);
+        if (policy.mode === 'authority') {
+            const authorizedSession = envelope.from === policy.authority;
+            const authorizedIdentity =
+                announcerIdentity !== undefined &&
+                announcerIdentity === policy.authority;
+            if (!authorizedSession && !authorizedIdentity) {
+                logEvent('info', 'openroom.directory_announce_denied', {
+                    room: payload.room,
+                    reason: 'not the configured authority',
+                    session: envelope.from,
+                    identity: announcerIdentity,
+                    authority: policy.authority,
+                });
+                return jsonResult({
+                    type: 'announce_result',
+                    id: envelope.id,
+                    success: false,
+                    error: 'announcement denied: room requires authority signature',
+                });
+            }
+        }
 
         const record: StoredAnnouncement = {
             v: SCHEMA_VERSION,
@@ -341,16 +466,26 @@ export class DirectoryDurableObject {
             });
         }
 
-        // Only the original announcer's session pubkey can unannounce in
-        // stage 1. v2 will additionally accept the same identity pubkey
-        // (via a provided attestation) or a cap proof for delegation.
-        if (existing.announcer_session !== envelope.from) {
+        // Authorization: the caller must either
+        //   (a) be the original announcer (session pubkey match), OR
+        //   (b) match the room's configured authority (if authority mode)
+        // Authority mode also lets a new session of the same identity
+        // unannounce, which matters after reconnects.
+        const policy = await this.loadPolicy(room);
+        const isOriginalAnnouncer =
+            existing.announcer_session === envelope.from;
+        const isAuthority =
+            policy.mode === 'authority' &&
+            policy.authority !== undefined &&
+            (envelope.from === policy.authority ||
+                existing.announcer_identity === policy.authority);
+        if (!isOriginalAnnouncer && !isAuthority) {
             return jsonResult({
                 type: 'unannounce_result',
                 id: envelope.id,
                 success: false,
                 room,
-                error: 'only the original announcer can unannounce',
+                error: 'only the original announcer or configured authority can unannounce',
             });
         }
 

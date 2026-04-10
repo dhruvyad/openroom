@@ -159,6 +159,45 @@ export class RoomDurableObject {
         await this.initialized;
 
         const url = new URL(request.url);
+
+        // Internal cross-DO endpoint: the directory DO fetches the room's
+        // directory-config resource to determine authority policy. This is
+        // an HTTP GET, not a WebSocket upgrade.
+        if (url.pathname === '/__internal/directory-config') {
+            const roomName = url.searchParams.get('room');
+            if (!roomName) {
+                return new Response('missing room param', { status: 400 });
+            }
+            this.loadCoreIfNeeded(roomName);
+            const resource = this.core.readResource(
+                roomName,
+                'directory-config'
+            );
+            if (!resource) {
+                return new Response(
+                    JSON.stringify({ present: false }),
+                    {
+                        status: 200,
+                        headers: { 'content-type': 'application/json' },
+                    }
+                );
+            }
+            // Return the content bytes as base64url-encoded JSON so the
+            // directory DO can parse without binary framing surprises.
+            return new Response(
+                JSON.stringify({
+                    present: true,
+                    content: btoa(
+                        String.fromCharCode(...resource.content)
+                    ),
+                }),
+                {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                }
+            );
+        }
+
         const match = url.pathname.match(ROOM_PATH_RE);
         if (!match) return new Response('not found', { status: 404 });
         if (request.headers.get('Upgrade') !== 'websocket') {
