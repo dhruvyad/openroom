@@ -297,7 +297,8 @@ export async function runMcpServer() {
         );
         process.exit(1);
     }
-    const relayUrl = process.env.OPENROOM_RELAY ?? 'ws://localhost:8787';
+    const relayUrl =
+        process.env.OPENROOM_RELAY ?? 'wss://relay.openroom.channel';
     const displayName = process.env.OPENROOM_NAME ?? 'claude';
     const description =
         process.env.OPENROOM_DESCRIPTION ?? 'Claude session via openroom';

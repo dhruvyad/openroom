@@ -33,18 +33,29 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function run() {
-    // --- Spawn the MCP server as a subprocess via tsx ---
-    // The transport boots `tsx src/claude-mcp.ts` with the env vars the
-    // server reads at startup.
-    const serverEntry = path.resolve(
-        __dirname,
-        '..',
-        'src',
-        'claude-mcp.ts'
-    );
+    // --- Spawn the MCP server as a subprocess ---
+    // By default, boots `tsx src/claude-mcp.ts` against the local source.
+    // Set OPENROOM_MCP_SERVER_CMD to a path like `/path/to/openroom` to
+    // instead spawn that binary with `mcp-server` as the arg — used by
+    // scripts/mcp-npm-smoke-test.sh to validate the published artifact.
+    let command: string;
+    let args: string[];
+    const override = process.env.OPENROOM_MCP_SERVER_CMD;
+    if (override) {
+        command = override;
+        args = ['mcp-server'];
+    } else {
+        command = 'pnpm';
+        args = [
+            'exec',
+            'tsx',
+            path.resolve(__dirname, '..', 'src', 'claude-mcp.ts'),
+        ];
+    }
+
     const transport = new StdioClientTransport({
-        command: 'pnpm',
-        args: ['exec', 'tsx', serverEntry],
+        command,
+        args,
         env: {
             ...process.env,
             OPENROOM_RELAY: RELAY_URL,

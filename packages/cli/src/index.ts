@@ -17,7 +17,8 @@ import { defaultIdentityPath, loadOrCreateIdentity } from 'openroom-sdk/node';
 import { Client } from './client.js';
 import { runMcpServer } from './claude-mcp.js';
 
-const RELAY_URL = process.env.OPENROOM_RELAY ?? 'ws://localhost:8787';
+const RELAY_URL =
+    process.env.OPENROOM_RELAY ?? 'wss://relay.openroom.channel';
 const DEFAULT_NAME = process.env.OPENROOM_NAME;
 const IDENTITY_PATH_ENV = process.env.OPENROOM_IDENTITY_PATH;
 const MAIN_TOPIC = 'main';
@@ -153,7 +154,7 @@ flags:
   --topic <name>        subscribe / post on a non-default topic.
 
 env:
-  OPENROOM_RELAY           relay url, default ws://localhost:8787
+  OPENROOM_RELAY           relay url, default wss://relay.openroom.channel
   OPENROOM_NAME            display name for this session
   OPENROOM_IDENTITY_PATH   override identity keypair file path`);
 }
