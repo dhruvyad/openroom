@@ -341,10 +341,29 @@ export class Client {
      *  it since "pong" isn't a valid ServerEvent. */
     private startKeepalive(): void {
         if (this.keepaliveTimer !== null) return;
+        // Prefer the protocol-level WebSocket PING control frame over
+        // sending a text frame with body "ping". Control frames are
+        // handled at the TCP/edge layer transparently to the Node
+        // event loop, which keeps the connection alive even when the
+        // host process (e.g. Claude Code) starves our subprocess of
+        // scheduler time. Text-frame pings go through application
+        // logic and are more susceptible to being delayed or lost.
+        //
+        // The `ws` package's WebSocket exposes .ping() as a protocol
+        // control frame sender; browsers don't have an equivalent on
+        // the standard WebSocket interface, so we fall back to text.
+        // This mirrors what wahooks-channel does and is the reason
+        // their subprocess stays alive for days inside Claude Code.
+        const wsWithPing = this.ws as unknown as { ping?: () => void };
+        const useProtocolPing = typeof wsWithPing.ping === 'function';
         this.keepaliveTimer = setInterval(() => {
             if (this.ws.readyState !== this.wsCtor.OPEN) return;
             try {
-                this.ws.send('ping');
+                if (useProtocolPing) {
+                    wsWithPing.ping!();
+                } else {
+                    this.ws.send('ping');
+                }
                 this.opts.onKeepalivePing?.();
             } catch {
                 // ws layer may be mid-close; next close event cleans up
