@@ -113,13 +113,17 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          # Node 24 ships npm 11.x out of the box, which has trusted
+          # publishing built in. Node 22 LTS bundles an older npm and
+          # `npm install -g npm@latest` breaks mid-upgrade on the
+          # hosted toolcache ("Cannot find module 'promise-retry'"),
+          # so we bypass that by picking a version with the right
+          # bundled npm.
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: upgrade npm to trusted-publishing-capable version
-        # Node 22's bundled npm can be older than 11.5.1. Trusted
-        # publishing requires 11.5.1+ for the OIDC token exchange.
-        run: npm install -g npm@latest
+      - name: print npm version
+        run: npm --version
 
       - uses: actions/download-artifact@v4
         with:
