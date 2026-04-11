@@ -56,6 +56,10 @@ interface Agent {
     /** names of topics this agent currently subscribes to. Tracked here so
      *  it can be serialized into ws attachment for hibernation survival. */
     subscribedTopics: Set<string>;
+    /** Read-only viewer. Relay rejects send / direct / create_topic /
+     *  resource_put from these. Surfaced in AgentSummary so other agents
+     *  and UIs can separate participants from observers. */
+    viewer: boolean;
 }
 
 /**
@@ -103,6 +107,9 @@ export interface AgentAttachment {
     rateTokens: number;
     rateLastRefillMs: number;
     subscribedTopics: string[];
+    /** Read-only viewer flag. Omitted when false to keep the attachment
+     *  compact for the common case. */
+    viewer?: boolean;
 }
 
 export const AGENT_ATTACHMENT_VERSION = 1;
@@ -373,6 +380,7 @@ export class RelayCore {
             rateTokens: attachment.rateTokens,
             rateLastRefillMs: attachment.rateLastRefillMs,
             subscribedTopics: new Set(),
+            viewer: attachment.viewer === true,
         };
 
         this.connections.set(ws, agent);
@@ -394,7 +402,7 @@ export class RelayCore {
 
     /** Serialize an agent to the shape persisted via ws.serializeAttachment. */
     serializeAgent(agent: Agent): AgentAttachment {
-        return {
+        const attachment: AgentAttachment = {
             v: AGENT_ATTACHMENT_VERSION,
             sessionPubkey: agent.sessionPubkey,
             displayName: agent.displayName,
@@ -405,6 +413,8 @@ export class RelayCore {
             rateLastRefillMs: agent.rateLastRefillMs,
             subscribedTopics: Array.from(agent.subscribedTopics),
         };
+        if (agent.viewer) attachment.viewer = true;
+        return attachment;
     }
 
     /**
@@ -426,6 +436,7 @@ export class RelayCore {
             rateTokens: RATE_LIMIT_BURST,
             rateLastRefillMs: Date.now(),
             subscribedTopics: new Set(),
+            viewer: false,
         };
         this.connections.set(ws, agent);
         this.sendEvent(ws, { type: 'challenge', nonce: challengeNonce });
@@ -673,6 +684,7 @@ export class RelayCore {
 
         agent.sessionPubkey = envelope.from;
         agent.displayName = envelope.payload.display_name;
+        agent.viewer = envelope.payload.viewer === true;
         // Cap description to bound per-ws attachment size so it survives
         // hibernation via ws.serializeAttachment (2 KB hard limit).
         if (
@@ -743,6 +755,10 @@ export class RelayCore {
 
         if (!agent.joined) {
             sendFail('not joined');
+            return;
+        }
+        if (agent.viewer) {
+            sendFail('viewers cannot send messages');
             return;
         }
         const room = this.rooms.get(roomName);
@@ -826,6 +842,7 @@ export class RelayCore {
         };
 
         if (!agent.joined) return fail('not joined');
+        if (agent.viewer) return fail('viewers cannot send direct messages');
         const room = this.rooms.get(roomName);
         if (!room) return fail('unknown room');
 
@@ -887,6 +904,15 @@ export class RelayCore {
                 id: envelope.id,
                 success: false,
                 error: 'not joined',
+            });
+            return;
+        }
+        if (agent.viewer) {
+            this.sendResult(agent.ws, {
+                type: 'create_topic_result',
+                id: envelope.id,
+                success: false,
+                error: 'viewers cannot create topics',
             });
             return;
         }
@@ -1345,12 +1371,16 @@ export class RelayCore {
     private snapshotAgents(room: Room): AgentSummary[] {
         return Array.from(room.agents.values())
             .filter((a) => a.joined)
-            .map((a) => ({
-                pubkey: a.sessionPubkey,
-                display_name: a.displayName,
-                description: a.description,
-                identity_attestation: a.identityAttestation,
-            }));
+            .map((a) => {
+                const summary: AgentSummary = {
+                    pubkey: a.sessionPubkey,
+                    display_name: a.displayName,
+                    description: a.description,
+                    identity_attestation: a.identityAttestation,
+                };
+                if (a.viewer) summary.viewer = true;
+                return summary;
+            });
     }
 
     private snapshotTopics(room: Room): TopicSummary[] {
@@ -1382,6 +1412,7 @@ export class RelayCore {
         };
 
         if (!agent.joined) return fail('not joined');
+        if (agent.viewer) return fail('viewers cannot write resources');
         const room = this.rooms.get(roomName);
         if (!room) return fail('unknown room');
 

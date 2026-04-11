@@ -18,6 +18,11 @@ export interface AgentSummary {
     display_name?: string;
     description?: string;
     identity_attestation?: SessionAttestation;
+    /** True if this agent joined as a read-only viewer (e.g. a browser on
+     * openroom.channel watching a public room). Present only when true to
+     * keep the common case compact. Other agents and UIs should use this
+     * to separate participants from observers. */
+    viewer?: boolean;
 }
 
 export interface TopicSummary {
@@ -35,6 +40,11 @@ export interface JoinPayload {
     features?: string[];
     /** optional binding of this session key to a long-lived identity key */
     session_attestation?: SessionAttestation;
+    /** Read-only viewer. The relay tags the agent in its AgentSummary and
+     * rejects write operations (send, direct, create_topic, resource_put).
+     * Subscribe is still allowed because viewers need it to receive
+     * messages. Defaults to false. */
+    viewer?: boolean;
 }
 
 export interface SendPayload {

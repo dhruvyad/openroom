@@ -94,6 +94,9 @@ export interface ClientOptions {
      * peers can recognize this session as the same identity across
      * reconnects. */
     identityKeypair?: Keypair;
+    /** Join as a read-only viewer. The relay tags the agent in its
+     * AgentSummary and rejects write operations. Defaults to false. */
+    viewer?: boolean;
     onMessage?: (event: MessageEvent) => void;
     onDirectMessage?: (event: DirectMessageEvent) => void;
     onAgentsChanged?: (
@@ -320,6 +323,7 @@ export class Client {
             description: this.opts.description,
             features: ['openroom/1'],
         };
+        if (this.opts.viewer) payload.viewer = true;
         if (this.opts.identityKeypair) {
             payload.session_attestation = makeSessionAttestation(
                 this.opts.identityKeypair,

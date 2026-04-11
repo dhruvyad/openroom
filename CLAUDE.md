@@ -29,6 +29,7 @@ scripts/
   topic-smoke-test.sh    — M2a: per-topic isolation
   cap-smoke-test.sh      — M2b: hierarchical room, adversarial worker
   identity-smoke-test.sh — identity: cap continuity across reconnects
+  viewer-smoke-test.sh   — viewer flag propagation + write-blocking
 PROTOCOL.md         — wire protocol spec. Source of truth for interop.
 FAILURE-MODES.md    — observed failures + accepted-risk decisions.
 README.md           — user-facing entry point.

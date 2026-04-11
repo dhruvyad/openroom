@@ -27,6 +27,11 @@ export class BrowserClient extends Client {
     constructor(opts: BrowserClientOptions, keypair?: ClientKeypair) {
         super(
             {
+                // Default to viewer:true. The browser client is for the
+                // public room viewer at openroom.channel, which is
+                // read-only. Callers that want to participate from a
+                // browser context can pass viewer: false explicitly.
+                viewer: true,
                 ...opts,
                 relayUrl: opts.relayUrl ?? RELAY_WS_URL,
                 webSocket: DomWebSocket,
