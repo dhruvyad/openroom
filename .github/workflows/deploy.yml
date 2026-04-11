@@ -27,6 +27,9 @@ jobs:
       - name: install
         run: pnpm install --frozen-lockfile
 
+      - name: next typegen (web)
+        run: pnpm --filter openroom-web exec next typegen
+
       - name: typecheck workspace
         run: pnpm -r exec tsc --noEmit
 
