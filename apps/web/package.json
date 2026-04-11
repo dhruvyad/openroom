@@ -1,8 +1,8 @@
 {
-  "name": "openroom-docs",
+  "name": "openroom-web",
   "version": "0.0.0",
   "private": true,
-  "description": "Documentation site for openroom, built with Fumadocs",
+  "description": "openroom.channel — landing page, room viewer, and docs",
   "scripts": {
     "build": "next build",
     "dev": "next dev",

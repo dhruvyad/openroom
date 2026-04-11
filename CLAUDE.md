@@ -21,8 +21,9 @@ packages/
               class used by scratch scripts and the eventual Claude adapter.
               Has `send`, `listen`, `identity` subcommands today.
 apps/
-  docs/     — openroom-docs. Fumadocs v16 / Next.js 15 / Tailwind v4 doc site.
-              `pnpm --filter openroom-docs dev` boots at localhost:3000.
+  web/      — openroom-web. Next.js 16 / Fumadocs / Tailwind v4. Hosts the
+              landing page, public room browser, room viewer, and docs.
+              `pnpm --filter openroom-web dev` boots at localhost:3000.
 scripts/
   smoke-test.sh          — M1: basic send/listen on main
   topic-smoke-test.sh    — M2a: per-topic isolation
@@ -80,8 +81,8 @@ OPENROOM_RELAY=wss://relay.openroom.channel \
   pnpm --filter openroom dev listen my-room
 
 # Docs site:
-pnpm --filter openroom-docs dev                         # Fumadocs dev server
-pnpm --filter openroom-docs build                       # production build
+pnpm --filter openroom-web dev                          # web app dev server
+pnpm --filter openroom-web build                        # production build
 ```
 
 Ports 18xxx and 19xxx are used by smoke tests — prefer ports above that range for ad-hoc dev to avoid collision.
@@ -103,7 +104,7 @@ Ports 18xxx and 19xxx are used by smoke tests — prefer ports above that range 
 ## Gotchas we've already hit
 
 - **Fumadocs scaffolder** (`create-fumadocs-app`) uses a clack-based TUI that reads directly from the raw TTY per prompt. Piping `\n` or `\r` through stdin does not work. Use `expect` to drive it.
-- **Next.js + pnpm workspaces**: `turbopack.root` in `apps/docs/next.config.mjs` must be the monorepo root, not the app directory. Setting it to the app dir makes Next unable to resolve `next/package.json` because the real files live in the pnpm store above.
+- **Next.js + pnpm workspaces**: `turbopack.root` in `apps/web/next.config.mjs` must be the monorepo root, not the app directory. Setting it to the app dir makes Next unable to resolve `next/package.json` because the real files live in the pnpm store above.
 - **`@noble/ed25519` v2** requires `sha512` to be injected at import time. Already wired in `packages/sdk/src/crypto.ts` via `ed.etc.sha512Sync = ...`. Don't remove it.
 - **`Buffer.from(s, 'base64url')` silently drops invalid characters** and returns a short buffer instead of throwing. The SDK now uses a pure-JS base64url implementation in `packages/sdk/src/crypto.ts` that throws on invalid input AND works in Cloudflare Workers without the `Buffer` polyfill. `loadIdentity` additionally validates key lengths as a defense in depth.
 - **If the working directory gets renamed mid-session** (e.g. `mv openchat openroom`), the Bash tool's persistent cwd wedges on the missing path and every subsequent shell command fails. The only recovery is to restart Claude Code from the new directory.
@@ -119,7 +120,7 @@ Ports 18xxx and 19xxx are used by smoke tests — prefer ports above that range 
 - Milestones landed: M1 (wire protocol loop), M2a (topics), M2b (capabilities), identity layer, Claude MCP adapter, Cloudflare Worker + Durable Object deployment
 - Reference relay deployed at `wss://relay.openroom.channel` (with `wss://openroom-relay.dhruvyadav1806.workers.dev` as a fallback) via a `RoomDurableObject` class (one DO instance per room, hibernation-enabled via `state.acceptWebSocket`). Room state persisted through `RoomStore` (DurableObjectStorage), per-agent state in `ws.serializeAttachment()`, in-memory caches rebuilt on wake. See `packages/relay/HIBERNATION.md` for the architecture and failure modes.
 - Reference CLI has `send`, `listen`, `identity`, `mcp-server`, `claude` subcommands plus a working `Client` class exposed via the cli package.
-- Fumadocs site scaffolded at `apps/docs` with an openroom landing page and an index doc linking to `PROTOCOL.md`.
+- Fumadocs site scaffolded at `apps/web` with an openroom landing page and an index doc linking to `PROTOCOL.md`.
 
 What's next (no commitment; these are the plausible directions):
 
@@ -149,4 +150,4 @@ If you think any of these is wrong, raise it explicitly with reasoning — don't
 - Observed failures and accepted risks → `FAILURE-MODES.md`
 - Commit history and design rationale → `git log` (conventional prefixes make it skimmable)
 - End-user framing → `README.md`
-- Documentation site (in progress) → `apps/docs/`
+- Web app (landing + viewer + docs, in progress) → `apps/web/`
