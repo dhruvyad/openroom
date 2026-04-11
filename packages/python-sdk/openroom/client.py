@@ -42,6 +42,7 @@ from openroom.envelope import make_envelope, verify_envelope
 from openroom.identity import make_session_attestation
 from openroom.types import (
     AgentSummary,
+    RecentMessage,
     ResourceSummary,
     RpcResult,
     ServerEvent,
@@ -53,12 +54,25 @@ from openroom.types import (
 DEFAULT_TIMEOUT = 5.0
 DEFAULT_TOPIC = "main"
 
-# WebSocket keepalive interval. The relay configures a CF edge auto-
-# responder that replies "pong" to a raw "ping" text frame without
-# waking the Durable Object. We send pings on this interval so quiet
-# connections (e.g. an agent idling between prompts) don't get
-# dropped by CF's ~100s idle timeout.
-KEEPALIVE_INTERVAL_SECONDS = 30.0
+# Text-frame keepalive interval. Every tick we send raw text "ping"
+# which the relay handles in its webSocketMessage handler, waking the
+# Durable Object and refreshing its binding to this socket. The
+# websockets library also sends protocol PING control frames at its
+# own ping_interval (default 20s) which keeps the TCP/NAT layer warm;
+# the two work together the same way the JS SDK does.
+#
+# 10s interval with a 3s kickoff after join keeps us well under any
+# consumer NAT idle timeout and any CF edge cleanup window.
+KEEPALIVE_INTERVAL_SECONDS = 10.0
+KEEPALIVE_KICKOFF_SECONDS = 3.0
+# Built-in protocol ping cadence. websockets sends a PING control
+# frame every ping_interval seconds and expects a PONG within
+# ping_timeout or the connection is considered dead.
+PROTOCOL_PING_INTERVAL_SECONDS = 20.0
+PROTOCOL_PING_TIMEOUT_SECONDS = 20.0
+# Exponential backoff for auto-reconnect.
+RECONNECT_BASE_DELAY_SECONDS = 1.0
+RECONNECT_MAX_DELAY_SECONDS = 30.0
 
 
 class ClientError(Exception):
@@ -85,6 +99,7 @@ class Client(AbstractAsyncContextManager):
         description: str | None = None,
         viewer: bool = False,
         timeout: float = DEFAULT_TIMEOUT,
+        auto_reconnect: bool = False,
     ) -> None:
         self._relay_url = relay_url.rstrip("/")
         self._room = room
@@ -98,18 +113,30 @@ class Client(AbstractAsyncContextManager):
         self._description = description
         self._viewer = viewer
         self._timeout = timeout
+        self._auto_reconnect = auto_reconnect
 
         self._ws: ClientConnection | None = None
         self._recv_task: asyncio.Task[None] | None = None
         self._keepalive_task: asyncio.Task[None] | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
         self._event_queue: asyncio.Queue[ServerEvent | None] = asyncio.Queue()
         self._pending: dict[str, asyncio.Future[RpcResult]] = {}
         self._joined = asyncio.Event()
         self._join_error: str | None = None
+        # True once leave() has been called so the recv loop's
+        # termination handler knows not to reconnect.
+        self._leaving = False
+        # Topics this client has explicitly subscribed to via
+        # subscribe(). Tracked separately from self._topics (which is
+        # the room-wide list) so auto-reconnect can re-establish them
+        # after a fresh join.
+        self._subscribed_topics: set[str] = set()
+        self._reconnect_attempt = 0
 
         self._agents: list[AgentSummary] = []
         self._topics: list[TopicSummary] = []
         self._resources: list[ResourceSummary] = []
+        self._recent_messages: list[RecentMessage] = []
         self._you: str = ""
 
     # ---- lifecycle ----
@@ -146,6 +173,14 @@ class Client(AbstractAsyncContextManager):
     def resources(self) -> list[ResourceSummary]:
         return list(self._resources)
 
+    @property
+    def recent_messages(self) -> list[RecentMessage]:
+        """History buffer delivered by the relay in the joined event,
+        oldest first. Callers rendering a feed should seed it from
+        this on connect and layer live events on top.
+        """
+        return list(self._recent_messages)
+
     async def __aenter__(self) -> Client:
         await self.connect()
         return self
@@ -156,21 +191,44 @@ class Client(AbstractAsyncContextManager):
     async def connect(self) -> None:
         """Open the WebSocket, respond to the challenge, and wait for the
         ``joined`` event (or raise on join failure)."""
+        await self._open_socket()
+
+    async def _open_socket(self) -> None:
         url = f"{self._relay_url}/v1/room/{quote(self._room, safe='')}"
-        self._ws = await websockets.connect(url)
+        self._joined.clear()
+        self._join_error = None
+        # ping_interval/ping_timeout give us protocol-level PING
+        # control frames handled by the websockets library — these
+        # are the analog of the JS SDK's ws.ping(). They keep TCP
+        # and CF edge state warm without needing anything from our
+        # own code. We still send text "ping" in _keepalive_loop so
+        # the relay DO wakes up and refreshes its socket binding.
+        self._ws = await websockets.connect(
+            url,
+            ping_interval=PROTOCOL_PING_INTERVAL_SECONDS,
+            ping_timeout=PROTOCOL_PING_TIMEOUT_SECONDS,
+        )
         self._recv_task = asyncio.create_task(self._recv_loop())
         try:
             await asyncio.wait_for(self._joined.wait(), timeout=self._timeout)
         except TimeoutError:
-            await self._close()
+            await self._close(final=True)
             raise ClientError("join timeout")
         if self._join_error is not None:
             err = self._join_error
-            await self._close()
+            await self._close(final=True)
             raise ClientError(f"join failed: {err}")
 
     async def leave(self) -> None:
         """Send a ``leave`` envelope and close the connection."""
+        self._leaving = True
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._reconnect_task = None
         if self._ws is not None:
             try:
                 envelope = make_envelope(
@@ -182,9 +240,15 @@ class Client(AbstractAsyncContextManager):
                 await self._ws.send(json.dumps(envelope))
             except Exception:
                 pass  # already closing
-        await self._close()
+        await self._close(final=True)
 
-    async def _close(self) -> None:
+    async def _close(self, *, final: bool) -> None:
+        """Tear down the current WebSocket and associated tasks.
+
+        When ``final`` is True (explicit leave or reconnect-disabled
+        terminal close), also terminates the event queue so any
+        outstanding events() iterator sees termination.
+        """
         self._stop_keepalive()
         if self._ws is not None:
             try:
@@ -199,14 +263,15 @@ class Client(AbstractAsyncContextManager):
             except (asyncio.CancelledError, Exception):
                 pass
             self._recv_task = None
-        # Wake any callers waiting on events() so they see termination.
-        await self._event_queue.put(None)
+        if final:
+            await self._event_queue.put(None)
 
     def _start_keepalive(self) -> None:
-        """Start sending raw 'ping' text frames on a timer so idle
-        connections survive CF's WebSocket idle timeout. The relay's
-        edge auto-responder replies 'pong' without waking the DO; the
-        client drops the non-JSON reply silently in _recv_loop."""
+        """Start the text-frame keepalive loop. Each tick sends raw
+        "ping" which the relay handles in its webSocketMessage
+        handler, waking the Durable Object and refreshing its
+        binding to this socket. Runs in parallel to the websockets
+        library's built-in protocol ping (configured at connect)."""
         if self._keepalive_task is not None:
             return
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
@@ -219,19 +284,67 @@ class Client(AbstractAsyncContextManager):
 
     async def _keepalive_loop(self) -> None:
         try:
+            # Kickoff ping a few seconds after join so there's TCP
+            # activity within the consumer-NAT idle window, matching
+            # the JS SDK's kickoff behavior.
+            await asyncio.sleep(KEEPALIVE_KICKOFF_SECONDS)
             while True:
-                await asyncio.sleep(KEEPALIVE_INTERVAL_SECONDS)
                 ws = self._ws
                 if ws is None:
                     return
                 try:
                     await ws.send("ping")
                 except Exception:
-                    # Either closing or closed — the recv loop will
-                    # surface the termination through the event queue.
                     return
+                await asyncio.sleep(KEEPALIVE_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             return
+
+    async def _schedule_reconnect(self) -> None:
+        """Kick off a reconnect attempt after exponential backoff.
+        Called from the recv loop when the WebSocket closes
+        unexpectedly and auto_reconnect is enabled."""
+        if self._leaving or not self._auto_reconnect:
+            return
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(self._run_reconnect())
+
+    async def _run_reconnect(self) -> None:
+        try:
+            delay = min(
+                RECONNECT_MAX_DELAY_SECONDS,
+                RECONNECT_BASE_DELAY_SECONDS * (2**self._reconnect_attempt),
+            )
+            self._reconnect_attempt += 1
+            await asyncio.sleep(delay)
+            # Tear down whatever half-alive state is left without
+            # pushing a final None to the event queue — callers of
+            # events() should see live messages from the fresh ws.
+            await self._close(final=False)
+            await self._open_socket()
+            # Resume previously-subscribed topics.
+            topics_to_resume = list(self._subscribed_topics)
+            self._subscribed_topics.clear()
+            for topic in topics_to_resume:
+                try:
+                    await self.subscribe(topic)
+                except Exception:
+                    # Per-topic failure is non-fatal; leave it out of
+                    # the resumed set so the caller can retry if they
+                    # care.
+                    pass
+            self._reconnect_attempt = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Reconnect attempt failed. The new ws is either not
+            # open or closed again already. If auto_reconnect is
+            # still on and we're not leaving, schedule another
+            # attempt with the next backoff step.
+            if self._auto_reconnect and not self._leaving:
+                self._reconnect_task = None
+                await self._schedule_reconnect()
 
     # ---- event stream ----
 
@@ -312,10 +425,12 @@ class Client(AbstractAsyncContextManager):
             payload["proof"] = cap.to_dict()
         result = await self._request("subscribe", payload)
         self._raise_if_failed(result, "subscribe")
+        self._subscribed_topics.add(topic)
 
     async def unsubscribe(self, topic: str) -> None:
         result = await self._request("unsubscribe", {"topic": topic})
         self._raise_if_failed(result, "unsubscribe")
+        self._subscribed_topics.discard(topic)
 
     async def list_topics(self) -> list[TopicSummary]:
         result = await self._request("list_topics", {})
@@ -429,7 +544,14 @@ class Client(AbstractAsyncContextManager):
                 if not fut.done():
                     fut.set_exception(ClientError("connection closed"))
             self._pending.clear()
-            await self._event_queue.put(None)
+            self._joined.clear()
+            # Auto-reconnect if enabled and the termination wasn't
+            # triggered by an explicit leave(). Otherwise emit the
+            # None sentinel so events() callers see termination.
+            if self._auto_reconnect and not self._leaving:
+                await self._schedule_reconnect()
+            else:
+                await self._event_queue.put(None)
 
     async def _handle_raw(self, data: dict[str, Any]) -> None:
         event = parse_event(data)
@@ -452,6 +574,14 @@ class Client(AbstractAsyncContextManager):
             self._agents = event.agents
             self._topics = event.topics
             self._resources = event.resources
+            # Verify each backfilled envelope's signature locally — the
+            # relay could be compromised and fabricate history, so we
+            # drop entries that don't verify against their own `from`
+            # pubkey.
+            self._recent_messages = [
+                m for m in event.recent_messages
+                if verify_envelope(m.envelope)
+            ]
             self._start_keepalive()
             self._joined.set()
             await self._event_queue.put(event)

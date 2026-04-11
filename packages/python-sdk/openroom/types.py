@@ -179,6 +179,19 @@ class ChallengeEvent:
 
 
 @dataclass(frozen=True)
+class RecentMessage:
+    """One entry in the backfill history delivered on join.
+
+    Stores the raw envelope dict so callers can verify the signature
+    and pull out payload fields. ``type`` indicates which wire event
+    the envelope came from (topic message vs direct message).
+    """
+
+    type: Literal["message", "direct_message"]
+    envelope: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class JoinedEvent:
     type: Literal["joined"]
     room: str
@@ -186,6 +199,7 @@ class JoinedEvent:
     agents: list[AgentSummary]
     topics: list[TopicSummary]
     resources: list[ResourceSummary]
+    recent_messages: list[RecentMessage]
     server_time: int
 
 
@@ -297,6 +311,19 @@ def parse_event(raw: dict[str, Any]) -> ServerEvent | None:
     if t == "challenge":
         return ChallengeEvent(type="challenge", nonce=raw["nonce"])
     if t == "joined":
+        raw_recent = raw.get("recent_messages", []) or []
+        recent_messages = [
+            RecentMessage(
+                type=(
+                    "direct_message"
+                    if m.get("type") == "direct_message"
+                    else "message"
+                ),
+                envelope=m.get("envelope", {}),
+            )
+            for m in raw_recent
+            if isinstance(m, dict)
+        ]
         return JoinedEvent(
             type="joined",
             room=raw["room"],
@@ -306,6 +333,7 @@ def parse_event(raw: dict[str, Any]) -> ServerEvent | None:
             resources=[
                 ResourceSummary.from_dict(r) for r in raw.get("resources", [])
             ],
+            recent_messages=recent_messages,
             server_time=raw.get("server_time", 0),
         )
     if t == "agents_changed":
@@ -362,6 +390,7 @@ __all__ = [
     "JoinPayload",
     "JoinedEvent",
     "MessageEvent",
+    "RecentMessage",
     "ResourceChangedEvent",
     "ResourcePutPayload",
     "ResourceSummary",
