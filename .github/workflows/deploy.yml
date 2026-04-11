@@ -1,0 +1,132 @@
+name: deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: typecheck workspace
+        run: pnpm -r exec tsc --noEmit
+
+  smoke:
+    name: smoke tests
+    needs: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: smoke — main
+        run: bash scripts/smoke-test.sh
+
+      - name: smoke — topics
+        run: bash scripts/topic-smoke-test.sh
+
+      - name: smoke — capabilities
+        run: bash scripts/cap-smoke-test.sh
+
+      - name: smoke — identity
+        run: bash scripts/identity-smoke-test.sh
+
+      - name: smoke — mcp adapter
+        run: bash scripts/mcp-smoke-test.sh
+
+      - name: smoke — resources
+        run: bash scripts/resource-smoke-test.sh
+
+      - name: smoke — rate limits
+        run: bash scripts/rate-limit-smoke-test.sh
+
+      - name: smoke — direct messages
+        run: bash scripts/direct-smoke-test.sh
+
+      - name: smoke — viewer mode
+        run: bash scripts/viewer-smoke-test.sh
+
+  deploy-relay:
+    name: deploy relay
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: deploy relay
+        run: pnpm --filter openroom-relay exec wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  deploy-web:
+    name: deploy web
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: build worker
+        run: pnpm --filter openroom-web build:worker
+
+      - name: deploy worker
+        run: pnpm --filter openroom-web deploy:cf
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

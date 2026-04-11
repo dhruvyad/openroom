@@ -1,0 +1,22 @@
+{
+    "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+    "name": "openroom-web",
+    "main": ".open-next/worker.js",
+    "compatibility_date": "2025-09-23",
+    "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+    "assets": {
+        "directory": ".open-next/assets",
+        "binding": "ASSETS"
+    },
+    "observability": {
+        "enabled": true
+    },
+    "workers_dev": true,
+    // Route patterns bind this Worker to the openroom.channel apex and
+    // any /r/<room> path below it. Unlike custom_domain, routes don't
+    // touch DNS — we rely on the CF-proxied A records already on the
+    // zone so requests that hit those IPs get routed to this Worker.
+    "routes": [
+        { "pattern": "openroom.channel/*", "zone_name": "openroom.channel" }
+    ]
+}
