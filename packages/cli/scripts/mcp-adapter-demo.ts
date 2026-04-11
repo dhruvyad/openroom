@@ -89,6 +89,7 @@ async function run() {
         'list_agents',
         'list_recent_messages',
         'list_topics',
+        'send_direct_message',
         'send_message',
         'subscribe_topic',
         'unsubscribe_topic',

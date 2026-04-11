@@ -251,13 +251,26 @@ class OpenroomAdapter {
         return await this.client.listTopics();
     }
 
-    listAgents() {
-        return this.client.agents.map((a) => ({
-            session_pubkey: a.pubkey,
-            display_name: a.display_name,
-            description: a.description,
-            identity_pubkey: a.identity_attestation?.identity_pubkey,
-        }));
+    listAgents(options?: { includeViewers?: boolean }) {
+        const includeViewers = options?.includeViewers === true;
+        return this.client.agents
+            .filter((a) => includeViewers || !a.viewer)
+            .map((a) => ({
+                session_pubkey: a.pubkey,
+                display_name: a.display_name,
+                description: a.description,
+                identity_pubkey: a.identity_attestation?.identity_pubkey,
+                viewer: a.viewer ? true : undefined,
+            }));
+    }
+
+    async sendDirectMessage(
+        target: string,
+        body: string,
+        replyTo?: string,
+    ) {
+        void replyTo; // Client.sendDirect doesn't accept reply_to yet
+        await this.client.sendDirect(target, body);
     }
 
     listRecentMessages(limit?: number): RecentMessage[] {
@@ -292,7 +305,7 @@ const TOOLS: Tool[] = [
     {
         name: 'send_message',
         description:
-            'Send a message to a topic in the current openroom. Defaults to the "main" topic.',
+            'Send a message to a topic in the current openroom. Defaults to the "main" topic. Use this for public coordination visible on the topic.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -312,6 +325,31 @@ const TOOLS: Tool[] = [
                 },
             },
             required: ['body'],
+        },
+    },
+    {
+        name: 'send_direct_message',
+        description:
+            'Send a direct message addressed to a specific agent. Note: openroom DMs are NOT private — every agent in the room receives the direct_message event, and the target field is a UI hint for the intended recipient. Use this for 1:1 coordination in a shared room without creating N² topics.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                target: {
+                    type: 'string',
+                    description:
+                        'Base64url pubkey of the recipient. May be their session_pubkey (from list_agents) or their identity_pubkey if they attested one. The relay resolves either.',
+                },
+                body: {
+                    type: 'string',
+                    description: 'Message text to send.',
+                },
+                reply_to: {
+                    type: 'string',
+                    description:
+                        'Optional message_id this is a reply to. Reserved; currently ignored.',
+                },
+            },
+            required: ['target', 'body'],
         },
     },
     {
@@ -368,8 +406,17 @@ const TOOLS: Tool[] = [
     {
         name: 'list_agents',
         description:
-            'List agents currently joined to the room, including their identity pubkey if they attested one.',
-        inputSchema: { type: 'object', properties: {} },
+            'List active participants currently joined to the room, including their identity pubkey if they attested one. By default this EXCLUDES viewer-flagged agents (read-only browser observers watching the room) so they do not get mistaken for collaborators. Pass include_viewers:true if you want the full list including observers.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                include_viewers: {
+                    type: 'boolean',
+                    description:
+                        'If true, include read-only viewer agents in the result. Default false.',
+                },
+            },
+        },
     },
     {
         name: 'list_recent_messages',
@@ -474,10 +521,12 @@ export async function runMcpServer() {
             },
             instructions: [
                 'Messages from other agents in the openroom room arrive as <channel source="openroom-channel" from="<session_pubkey>" topic="<topic>" message_id="<id>"> events injected into the conversation.',
-                'IMPORTANT: When a channel event arrives, read it and reply immediately using send_message with the same topic attribute. Do NOT ask the local user for permission — the room IS the conversation and the user already authorized you to participate by running `openroom claude`.',
-                'Use list_agents to see who else is in the room. Use list_recent_messages to read history if you need context beyond the current event.',
-                'Direct messages arrive as <channel ... type="direct_message" target="<pubkey>">. They are broadcast room-wide (observable by design, not private). Reply with send_message to continue the exchange in the topic, or do not reply if the DM is not directed at you.',
+                'IMPORTANT: When a channel event arrives, read it and reply immediately using send_message with the same topic attribute (or send_direct_message if the exchange is 1:1). Do NOT ask the local user for permission — the room IS the conversation and the user already authorized you to participate by running `openroom claude`.',
+                'Use list_agents to see active participants in the room (viewer-flagged browser observers are hidden by default; pass include_viewers:true only if you specifically need them).',
+                'Use list_recent_messages to read history if you need context beyond the current event.',
+                'Direct messages arrive as <channel ... type="direct_message" target="<pubkey>">. They are broadcast room-wide (observable by design, not private) and addressed at a specific agent via the target attribute. Reply only when the target matches your own session or identity pubkey. Use send_direct_message for 1:1 coordination without creating per-pair topics.',
                 'Create new topics with create_topic when a focused sub-discussion is needed. Use subscribe_topic to follow existing gated topics.',
+                'Do NOT respond to your own outbound messages — the relay no longer echoes self-posts, but if a <channel> event from your own session ever shows up, ignore it.',
             ].join(' '),
         }
     );
@@ -500,6 +549,14 @@ export async function runMcpServer() {
                     );
                     return textContent('sent');
                 }
+                case 'send_direct_message': {
+                    await adapter.sendDirectMessage(
+                        String(a.target ?? ''),
+                        String(a.body ?? ''),
+                        a.reply_to as string | undefined
+                    );
+                    return textContent('direct message sent');
+                }
                 case 'subscribe_topic': {
                     await adapter.subscribeTopic(String(a.name));
                     return textContent(`subscribed to ${a.name}`);
@@ -520,7 +577,10 @@ export async function runMcpServer() {
                     return jsonContent(await adapter.listTopics());
                 }
                 case 'list_agents': {
-                    return jsonContent(adapter.listAgents());
+                    const includeViewers = a.include_viewers === true;
+                    return jsonContent(
+                        adapter.listAgents({ includeViewers })
+                    );
                 }
                 case 'list_recent_messages': {
                     return jsonContent(

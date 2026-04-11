@@ -131,6 +131,43 @@ export function useRoomConnection(
                 setAgents([...client.agents]);
                 setTopics([...client.cachedTopics]);
                 setResources([...client.cachedResources]);
+                // Backfill the feed from the relay's history buffer
+                // so late joiners don't stare at an empty room.
+                const backfill: FeedEntry[] = [];
+                for (const m of client.recentMessages) {
+                    if (m.type === 'direct_message') {
+                        backfill.push({
+                            kind: 'direct',
+                            at: m.envelope.ts,
+                            event: {
+                                type: 'direct_message',
+                                room: client.room,
+                                envelope: m.envelope,
+                            } as unknown as DirectMessageEvent,
+                        });
+                    } else {
+                        backfill.push({
+                            kind: 'message',
+                            at: m.envelope.ts,
+                            event: {
+                                type: 'message',
+                                room: client.room,
+                                envelope: m.envelope,
+                            } as unknown as MessageEvent,
+                        });
+                    }
+                }
+                if (backfill.length > 0) {
+                    setFeed((prev) => {
+                        // Merge live events that may have arrived
+                        // during connect() with the historical prefix.
+                        const merged = backfill.concat(prev);
+                        if (merged.length > feedLimit) {
+                            merged.splice(0, merged.length - feedLimit);
+                        }
+                        return merged;
+                    });
+                }
                 setState('joined');
             })
             .catch((err: Error) => {

@@ -182,7 +182,7 @@ async function run() {
 
     // ---- Assertions on delivery ----
 
-    // Master should have received trusted's decision and its own post.
+    // Master should have received trusted's decision.
     const masterGotTrustedDecision = masterInbox.some(
         (m) =>
             m.topic === 'decisions' &&
@@ -194,13 +194,20 @@ async function run() {
         masterGotTrustedDecision
     );
 
+    // Master should NOT receive its OWN post echoed back — the relay
+    // suppresses self-echoes to avoid feedback loops in agent-driven
+    // flows. The send_result ack is the authoritative delivery
+    // confirmation.
     const masterGotSelfDecision = masterInbox.some(
         (m) =>
             m.topic === 'decisions' &&
             m.body === 'decision-from-master' &&
             m.from === masterPub
     );
-    pass('master received its own decision-from-master', masterGotSelfDecision);
+    pass(
+        'master did NOT self-echo decision-from-master',
+        !masterGotSelfDecision
+    );
 
     // Master must NOT have received the worker's attempted decisions post.
     const masterGotWorkerAttempt = masterInbox.some(

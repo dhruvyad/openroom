@@ -27,6 +27,7 @@ import {
     type DirectPayload,
     type DirectResult,
     type MessageEvent,
+    type RecentMessage,
     type ResourceChangedEvent,
     type ResourceGetPayload,
     type ResourceGetResult,
@@ -170,6 +171,7 @@ export class Client {
     private _agents: AgentSummary[] = [];
     private _topics: TopicSummary[] = [];
     private _resources: ResourceSummary[] = [];
+    private _recentMessages: RecentMessage[] = [];
 
     constructor(private opts: ClientOptions, keypair?: ClientKeypair) {
         const kp = keypair ?? generateKeypair();
@@ -259,6 +261,14 @@ export class Client {
                 this._agents = event.agents;
                 this._topics = event.topics;
                 this._resources = event.resources ?? [];
+                // Verify each backfilled envelope's signature. The
+                // relay has already verified them once on the way in,
+                // but we re-check here because a compromised relay
+                // could fabricate history to mislead the client. On
+                // verify failure, drop the entry silently.
+                this._recentMessages = (event.recent_messages ?? []).filter(
+                    (m) => verifyEnvelope(m.envelope)
+                );
                 this.startKeepalive();
                 this.joinResolve?.();
                 return;
@@ -673,6 +683,14 @@ export class Client {
     /** Cached resource summaries, updated by joined + resource_changed events. */
     get cachedResources(): readonly ResourceSummary[] {
         return this._resources;
+    }
+
+    /** History buffer delivered by the relay in the joined event.
+     *  Ordered oldest-first. Callers rendering a feed should seed it
+     *  with these entries on connect, then layer live onMessage /
+     *  onDirectMessage events on top. */
+    get recentMessages(): readonly RecentMessage[] {
+        return this._recentMessages;
     }
 
     /** Room name this client is connected to. */

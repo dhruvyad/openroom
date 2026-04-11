@@ -176,6 +176,14 @@ export interface ChallengeEvent {
     nonce: string;
 }
 
+/** One entry in the backfill history delivered on join. Stores the
+ *  full envelope (so clients can verify the original signature)
+ *  plus a tag indicating which wire event type it came from. */
+export interface RecentMessage {
+    type: 'message' | 'direct_message';
+    envelope: Envelope<SendPayload> | Envelope<DirectPayload>;
+}
+
 export interface JoinedEvent {
     type: 'joined';
     room: string;
@@ -183,6 +191,11 @@ export interface JoinedEvent {
     agents: AgentSummary[];
     topics: TopicSummary[];
     resources: ResourceSummary[];
+    /** Rolling window of message + direct_message envelopes the
+     *  relay has observed in this room, oldest first. Lets new
+     *  joiners (especially the web viewer) render history instead
+     *  of seeing an empty feed until someone else posts. */
+    recent_messages: RecentMessage[];
     server_time: number;
 }
 

@@ -140,11 +140,26 @@ interface Resource {
     subscribers: Set<string>;
 }
 
+/** One entry in the room's rolling history buffer. Stores the full
+ *  wire event so new joiners can render it (the envelope sig lets
+ *  them verify the original sender independently). */
+interface RecentEntry {
+    type: 'message' | 'direct_message';
+    envelope: Envelope<unknown>;
+    at: number;
+}
+
 interface Room {
     name: string;
     agents: Map<string, Agent>;
     topics: Map<string, Topic>;
     resources: Map<string, Resource>;
+    /** FIFO ring buffer of recent message + direct_message envelopes
+     *  for backfill on join. In-memory only — hibernation wipes it,
+     *  which is acceptable for a chat-shaped workload. Capped at
+     *  MAX_RECENT_MESSAGES so a flood-posting agent can't grow the
+     *  room's memory footprint without bound. */
+    recentMessages: RecentEntry[];
 }
 
 const TIMESTAMP_DRIFT_SECONDS = 300;
@@ -163,6 +178,11 @@ const MAX_AGENTS_PER_ROOM = 500;
 const MAX_TOPICS_PER_ROOM = 100;
 const MAX_RESOURCES_PER_ROOM = 500;
 const MAX_TOTAL_RESOURCE_BYTES_PER_ROOM = 32 * 1024 * 1024;
+/** How many recent messages + DMs are buffered per room for backfill
+ *  on join. Roughly sized for a medium chat window — 100 entries at
+ *  a few hundred bytes apiece is ~30KB per room, negligible against
+ *  the DO's memory budget. */
+const MAX_RECENT_MESSAGES = 100;
 
 // Per-connection rate limit (token bucket). Well-behaved clients stay
 // well under these; abusers hit them quickly and get error responses
@@ -315,6 +335,7 @@ export class RelayCore {
             agents: new Map(),
             topics: new Map(),
             resources: new Map(),
+            recentMessages: [],
         };
         for (const t of snapshot.topics) {
             room.topics.set(t.name, {
@@ -726,6 +747,10 @@ export class RelayCore {
         const agents = this.snapshotAgents(room);
         const topics = this.snapshotTopics(room);
         const resources = this.snapshotResources(room);
+        const recent_messages = room.recentMessages.map((e) => ({
+            type: e.type,
+            envelope: e.envelope as Envelope<SendPayload>,
+        }));
 
         this.sendEvent(agent.ws, {
             type: 'joined',
@@ -734,6 +759,7 @@ export class RelayCore {
             agents,
             topics,
             resources,
+            recent_messages,
             server_time: Math.floor(Date.now() / 1000),
         });
 
@@ -806,7 +832,14 @@ export class RelayCore {
             room: roomName,
             envelope,
         };
-        this.broadcastToTopic(room, topic, event);
+        // Exclude the sender from the broadcast. The send_result ack
+        // below is the authoritative confirmation that the relay
+        // accepted the message; echoing it back would just create a
+        // feedback loop where agents see and potentially react to
+        // their own posts. Matches how handleDirect already skips
+        // the sender.
+        this.broadcastToTopic(room, topic, event, agent.sessionPubkey);
+        this.recordRecentMessage(room, event);
 
         // Ack the send so the caller can correlate success to a specific
         // envelope id instead of inferring from the absence of an error.
@@ -890,6 +923,7 @@ export class RelayCore {
         // Exclude the sender since they already see their own action via
         // the direct_result ack.
         this.broadcastToRoom(room, event, agent.sessionPubkey);
+        this.recordRecentMessage(room, event);
 
         this.sendResult(agent.ws, {
             type: 'direct_result',
@@ -1236,6 +1270,7 @@ export class RelayCore {
                 agents: new Map(),
                 topics: new Map(),
                 resources: new Map(),
+                recentMessages: [],
             };
             room.topics.set(MAIN_TOPIC, {
                 name: MAIN_TOPIC,
@@ -1253,6 +1288,27 @@ export class RelayCore {
             });
         }
         return room;
+    }
+
+    /** Append a message or DM envelope to the room's rolling history
+     *  buffer, evicting the oldest entry if the buffer is at cap. The
+     *  history is what new joiners receive in their `joined` event so
+     *  they can render what happened before they arrived. */
+    private recordRecentMessage(room: Room, event: ServerEvent) {
+        if (event.type !== 'message' && event.type !== 'direct_message') {
+            return;
+        }
+        room.recentMessages.push({
+            type: event.type,
+            envelope: event.envelope as Envelope<unknown>,
+            at: event.envelope.ts,
+        });
+        if (room.recentMessages.length > MAX_RECENT_MESSAGES) {
+            room.recentMessages.splice(
+                0,
+                room.recentMessages.length - MAX_RECENT_MESSAGES
+            );
+        }
     }
 
     private broadcastToRoom(
