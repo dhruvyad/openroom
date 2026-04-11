@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openroom"
-version = "0.0.1"
+version = "0.0.2"
 description = "openroom protocol SDK for Python — envelopes, Ed25519 signing, JCS canonicalization, and an async client for the openroom relay."
 readme = "README.md"
 requires-python = ">=3.11"
