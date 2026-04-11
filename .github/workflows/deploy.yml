@@ -47,8 +47,20 @@ jobs:
           node-version: '22'
           cache: pnpm
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: install
         run: pnpm install --frozen-lockfile
+
+      - name: install python sdk
+        run: |
+          python -m venv packages/python-sdk/.venv
+          packages/python-sdk/.venv/bin/pip install -e 'packages/python-sdk[dev]'
+
+      - name: python sdk unit tests
+        run: packages/python-sdk/.venv/bin/pytest packages/python-sdk -q
 
       - name: smoke — main
         run: bash scripts/smoke-test.sh
@@ -76,6 +88,9 @@ jobs:
 
       - name: smoke — viewer mode
         run: bash scripts/viewer-smoke-test.sh
+
+      - name: smoke — python cross-language
+        run: bash scripts/python-smoke-test.sh
 
   deploy-relay:
     name: deploy relay

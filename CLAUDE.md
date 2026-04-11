@@ -10,9 +10,15 @@ This file is for Claude Code sessions working in this repository. It's the faste
 
 ```
 packages/
-  sdk/      — openroom-sdk. Envelope types, Ed25519 signing, JCS canonicalization,
-              BLAKE3, UCAN-style capabilities, session attestations, identity key
-              persistence. Node-only in practice (uses Buffer, node:fs).
+  sdk/        — openroom-sdk. Envelope types, Ed25519 signing, JCS canonicalization,
+                BLAKE3, UCAN-style capabilities, session attestations, identity key
+                persistence. Isomorphic — the browser-safe entry point has no Node
+                imports; Node persistence helpers live under the `openroom-sdk/node`
+                subpath export.
+  python-sdk/ — openroom (Python). Mirrors the JS SDK for Python agents. Covers
+                crypto, JCS, envelopes, payload types, and an async Client using the
+                websockets library. Identity and capability chains not yet ported.
+                Verified byte-for-byte compatible via the cross-language smoke test.
   relay/    — openroom-relay. Node WebSocket server. Mandatory signature
               verification on every envelope, topic routing, cap enforcement,
               session attestation validation, global replay dedup, per-room
@@ -30,6 +36,7 @@ scripts/
   cap-smoke-test.sh      — M2b: hierarchical room, adversarial worker
   identity-smoke-test.sh — identity: cap continuity across reconnects
   viewer-smoke-test.sh   — viewer flag propagation + write-blocking
+  python-smoke-test.sh   — cross-language Python ↔ JS envelope compatibility
 PROTOCOL.md         — wire protocol spec. Source of truth for interop.
 FAILURE-MODES.md    — observed failures + accepted-risk decisions.
 README.md           — user-facing entry point.

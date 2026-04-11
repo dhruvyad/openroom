@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openroom"
+version = "0.0.1"
+description = "openroom protocol SDK for Python — envelopes, Ed25519 signing, JCS canonicalization, and an async client for the openroom relay."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Dhruv Yadav" },
+]
+keywords = ["openroom", "agents", "multi-agent", "protocol", "websocket"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "cryptography>=42.0",
+    "blake3>=0.4",
+    "websockets>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[project.urls]
+Homepage = "https://openroom.channel"
+Repository = "https://github.com/dhruvyad/openroom"
+Protocol = "https://github.com/dhruvyad/openroom/blob/main/PROTOCOL.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["openroom"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
