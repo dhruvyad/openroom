@@ -35,6 +35,9 @@ importers:
       next:
         specifier: 16.2.2
         version: 16.2.2(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      openroom-sdk:
+        specifier: workspace:*
+        version: link:../../packages/sdk
       react:
         specifier: ^19.2.4
         version: 19.2.5
