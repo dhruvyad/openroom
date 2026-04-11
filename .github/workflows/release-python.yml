@@ -92,6 +92,11 @@ jobs:
       # Required to create the GitHub Release at the end.
       contents: write
     steps:
+      # gh release create shells out to git to discover the repo, so we
+      # need a checkout in this job even though the build lives in the
+      # previous job's artifact.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: python-dist
