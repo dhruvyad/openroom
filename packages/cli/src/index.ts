@@ -579,7 +579,23 @@ async function cmdClaude(args: ParsedArgs) {
     // Launch claude as a foreground child, inheriting stdio so the user
     // interacts directly. Forward signals so Ctrl-C in this parent process
     // reaches the claude child.
-    const child = spawn('claude', [], { stdio: 'inherit' });
+    //
+    // IMPORTANT: --dangerously-load-development-channels server:<name> is
+    // the flag that tells Claude Code to route the MCP server's
+    // `notifications/claude/channel` emissions into the conversation as
+    // <channel> events. Without this flag, Claude Code treats our server
+    // as a regular MCP server and silently drops the notifications —
+    // `claude mcp list` shows ✓ Connected but inbound room messages never
+    // reach the model. wahooks-cli (cli/cmd/claude.go) and noclick do
+    // the same thing. The "dangerously" prefix is because the channel
+    // lets an external source inject content into the conversation
+    // without prior user approval, which the user opts into by running
+    // `openroom claude` in the first place.
+    const claudeArgs = [
+        '--dangerously-load-development-channels',
+        `server:${MCP_SERVER_NAME}`,
+    ];
+    const child = spawn('claude', claudeArgs, { stdio: 'inherit' });
 
     const forward = (signal: NodeJS.Signals) => {
         if (!child.killed) child.kill(signal);
