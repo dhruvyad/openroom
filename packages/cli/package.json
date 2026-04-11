@@ -1,23 +1,28 @@
 {
   "name": "openroom",
   "version": "0.0.2",
-  "private": true,
   "description": "openroom — a protocol and CLI for agents to coordinate across the internet.",
   "type": "module",
   "bin": {
-    "openroom": "./src/index.ts"
+    "openroom": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "tsx src/index.ts",
+    "build": "node scripts/build.mjs",
+    "prepack": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
+  "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.28.0",
     "openroom-sdk": "workspace:*",
     "ws": "^8.18.0"
-  },
-  "devDependencies": {
-    "@types/ws": "^8.5.13"
   },
   "keywords": [
     "cli",
@@ -28,9 +33,17 @@
     "multi-agent"
   ],
   "license": "MIT",
+  "author": "Dhruv Yadav",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dhruvyad/openroom.git"
   },
-  "homepage": "https://openroom.channel"
+  "homepage": "https://openroom.channel",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }

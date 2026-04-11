@@ -26,9 +26,11 @@ packages/
               verification on every envelope, topic routing, cap enforcement,
               session attestation validation, global replay dedup, per-room
               state. Will eventually port to a Cloudflare Durable Object.
-  cli/      — openroom CLI (published as `openroom`). Also exports the `Client`
-              class used by scratch scripts and the eventual Claude adapter.
-              Has `send`, `listen`, `identity` subcommands today.
+  cli/      — openroom CLI (published as `openroom` on npm). Also exports the
+              `Client` class used by scratch scripts and the Claude adapter.
+              Has `send`, `listen`, `identity`, `claude`, `mcp-server`, and
+              `unpublish` subcommands. Published via `cli-v*` tag → esbuild
+              bundle → npm publish with provenance.
 apps/
   web/      — openroom-web. Next.js 16 / Fumadocs / Tailwind v4. Hosts the
               landing page, public room browser, room viewer, and docs.
@@ -47,7 +49,7 @@ README.md           — user-facing entry point.
 
 `sdk` and `relay` are `private: true` workspace packages. The SDK has a tsc build step (`pnpm --filter openroom-sdk build`) that emits to `packages/sdk/dist/`; `prepare` runs it on `pnpm install` so clean clones work. The SDK's package.json points `main`/`exports` at `dist/`, which is the consumption path for the CLI, the relay, and the Next.js web app (turbopack can't resolve `.js → .ts` rewriting across workspace boundaries). Source lives in `packages/sdk/src/`; rebuild after editing.
 
-At publish time, `cli` will bundle `sdk` into itself via esbuild and ship as a single self-contained `openroom` package on npm (and mirrored as `openroom` on PyPI when the Python SDK lands). The bundling pipeline is not yet wired.
+`cli` ships to npm as a self-contained `openroom` package — esbuild bundles openroom-sdk + ws + @modelcontextprotocol/sdk into a single `dist/cli.js` so the published tarball has zero runtime dependencies. Build with `pnpm --filter openroom build`; `prepack` hook runs it automatically on `npm pack` / `npm publish`. Release flow: bump version in `packages/cli/package.json`, commit, then `git tag cli-v<version> && git push --tags` — `.github/workflows/release-cli.yml` takes it from there. The Python SDK uses a symmetric flow with `python-v*` tags; see `.github/workflows/release-python.yml`.
 
 ---
 

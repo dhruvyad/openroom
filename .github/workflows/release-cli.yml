@@ -1,0 +1,134 @@
+name: release-cli
+
+# Publishes the openroom JS CLI to npm on a tag matching `cli-v*`
+# (e.g. `cli-v0.0.2`). Builds the esbuild bundle, packs it, and runs
+# `npm publish --provenance` so the package gets signed attestations
+# tying it to this workflow run.
+#
+# Auth is via an NPM_TOKEN repo secret (Automation type). This is the
+# widely-supported path today; npm's fully tokenless OIDC publishing is
+# newer and not assumed here. Provenance itself still lands because
+# `npm publish --provenance` uses the GitHub OIDC id-token to sign
+# attestations even when the upload auth is a token.
+#
+# Release flow from the command line:
+#   1. Bump version in packages/cli/package.json
+#   2. Commit and push to main
+#   3. git tag cli-v0.0.3 && git push --tags
+#   4. This workflow runs, builds, publishes, and creates a GitHub Release.
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+  workflow_dispatch:
+
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build bundle
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: read version from package.json
+        id: version
+        run: |
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "CLI version: $VERSION"
+
+      - name: assert tag matches version
+        if: github.event_name == 'push'
+        run: |
+          TAG="${GITHUB_REF#refs/tags/cli-v}"
+          VERSION="${{ steps.version.outputs.version }}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "tag $TAG does not match package.json version $VERSION" >&2
+            exit 1
+          fi
+
+      - name: build bundle
+        run: pnpm --filter openroom build
+
+      - name: pack tarball
+        run: |
+          mkdir -p dist-out
+          # Use `npm pack` (not `pnpm pack`) so the tarball layout is
+          # exactly what the registry receives on publish. `pnpm pack`
+          # also works but has some option differences we don't need.
+          cd packages/cli
+          npm pack --pack-destination=../../dist-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-dist
+          path: dist-out/
+          if-no-files-found: error
+
+  publish:
+    name: publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/openroom/v/${{ needs.build.outputs.version }}
+    permissions:
+      # Required for --provenance: signs the attestation with a short-
+      # lived GitHub OIDC token so the published package can be
+      # verified as coming from this workflow run.
+      id-token: write
+      # Required to create the GitHub Release at the end.
+      contents: write
+    steps:
+      # gh release create shells out to git to discover the repo, so
+      # we need a checkout even though we're installing from artifacts.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-dist
+          path: dist-out/
+
+      - name: publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          TARBALL=$(ls dist-out/openroom-*.tgz | head -1)
+          if [ -z "$TARBALL" ]; then
+            echo "no tarball found in dist-out/" >&2
+            exit 1
+          fi
+          echo "publishing $TARBALL"
+          npm publish "$TARBALL" --provenance --access public
+
+      - name: create github release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF#refs/tags/}" \
+              --title "CLI ${{ needs.build.outputs.version }}" \
+              --generate-notes \
+              dist-out/*
