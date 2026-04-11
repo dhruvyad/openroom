@@ -36,8 +36,10 @@ from urllib.parse import quote
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from openroom.cap import Cap
 from openroom.crypto import Keypair, generate_keypair, to_base64url
 from openroom.envelope import make_envelope, verify_envelope
+from openroom.identity import make_session_attestation
 from openroom.types import (
     AgentSummary,
     ResourceSummary,
@@ -71,6 +73,7 @@ class Client(AbstractAsyncContextManager):
         relay_url: str,
         room: str,
         keypair: Keypair | None = None,
+        identity_keypair: Keypair | None = None,
         display_name: str | None = None,
         description: str | None = None,
         viewer: bool = False,
@@ -79,6 +82,11 @@ class Client(AbstractAsyncContextManager):
         self._relay_url = relay_url.rstrip("/")
         self._room = room
         self._keypair = keypair or generate_keypair()
+        # Optional long-lived identity. When supplied, the client
+        # automatically attaches a session attestation to the join
+        # payload so peers recognize this session as the same identity
+        # across reconnects. Survives the life of the Client instance.
+        self._identity_keypair = identity_keypair
         self._display_name = display_name
         self._description = description
         self._viewer = viewer
@@ -103,6 +111,15 @@ class Client(AbstractAsyncContextManager):
         """Base64url-encoded session public key. Matches the ``from`` field
         the relay sees on every envelope from this client."""
         return to_base64url(self._keypair.public_key)
+
+    @property
+    def identity_pubkey(self) -> str | None:
+        """Base64url-encoded long-lived identity pubkey, or None if no
+        identity keypair was supplied. Peers use this to recognize the
+        same agent across reconnects."""
+        if self._identity_keypair is None:
+            return None
+        return to_base64url(self._identity_keypair.public_key)
 
     @property
     def room(self) -> str:
@@ -195,11 +212,19 @@ class Client(AbstractAsyncContextManager):
         topic: str = DEFAULT_TOPIC,
         *,
         reply_to: str | None = None,
+        cap: Cap | None = None,
     ) -> None:
-        """Send a message to a topic. Raises ClientError on relay rejection."""
+        """Send a message to a topic. Raises ClientError on relay rejection.
+
+        For a gated topic (``post_cap`` set), pass a ``cap`` whose leaf
+        audience is this session or the attested identity and whose root
+        matches the topic's ``post_cap``.
+        """
         payload: dict[str, Any] = {"topic": topic, "body": body}
         if reply_to is not None:
             payload["reply_to"] = reply_to
+        if cap is not None:
+            payload["cap_proof"] = cap.to_dict()
         result = await self._request("send", payload)
         self._raise_if_failed(result, "send")
 
@@ -239,8 +264,13 @@ class Client(AbstractAsyncContextManager):
             raise ClientError("create_topic returned no topic summary")
         return TopicSummary.from_dict(topic_raw)
 
-    async def subscribe(self, topic: str) -> None:
-        result = await self._request("subscribe", {"topic": topic})
+    async def subscribe(self, topic: str, *, cap: Cap | None = None) -> None:
+        """Subscribe to a topic. For a gated topic (``subscribe_cap``
+        set), pass a ``cap`` authorizing subscribe on the topic."""
+        payload: dict[str, Any] = {"topic": topic}
+        if cap is not None:
+            payload["proof"] = cap.to_dict()
+        result = await self._request("subscribe", payload)
         self._raise_if_failed(result, "subscribe")
 
     async def unsubscribe(self, topic: str) -> None:
@@ -260,7 +290,11 @@ class Client(AbstractAsyncContextManager):
         kind: str = "blob",
         mime: str | None = None,
         validation_hook: str | None = None,
+        cap: Cap | None = None,
     ) -> ResourceSummary:
+        """Write a resource to the room. If the existing slot has a
+        ``validation_hook`` set, pass a ``cap`` whose root matches it.
+        """
         if isinstance(content, str):
             content_bytes = content.encode("utf-8")
         else:
@@ -273,6 +307,8 @@ class Client(AbstractAsyncContextManager):
         }
         if mime is not None:
             payload["mime"] = mime
+        if cap is not None:
+            payload["cap_proof"] = cap.to_dict()
         result = await self._request("resource_put", payload)
         self._raise_if_failed(result, "resource_put")
         summary = result.raw.get("summary")
@@ -413,6 +449,17 @@ class Client(AbstractAsyncContextManager):
             payload["description"] = self._description
         if self._viewer:
             payload["viewer"] = True
+        if self._identity_keypair is not None:
+            # Bind this ephemeral session key to the long-lived
+            # identity, scoped to this room. The relay stores the
+            # attestation in the agent's state so peers see the
+            # identity pubkey alongside the session pubkey.
+            attestation = make_session_attestation(
+                self._identity_keypair,
+                self._keypair.public_key,
+                self._room,
+            )
+            payload["session_attestation"] = attestation.to_dict()
 
         envelope = make_envelope(
             "join",

@@ -1,0 +1,113 @@
+name: release-python
+
+# Publishes the openroom Python SDK to PyPI on a tag matching
+# `python-v*` (e.g. `python-v0.0.1`). Uses PyPI's trusted publisher
+# flow — GitHub Actions authenticates via OIDC, so there's no API
+# token stored in repo secrets.
+#
+# One-time PyPI setup (manual, via dashboard):
+#   1. Create the project at https://pypi.org/manage/account/publishing/
+#   2. Add a "pending publisher":
+#        Owner:  dhruvyad
+#        Repo:   openroom
+#        Workflow: release-python.yml
+#        Environment: pypi
+#   3. After the first successful run, PyPI auto-promotes it to
+#      a trusted publisher for subsequent releases.
+#
+# Release flow from the command line:
+#   1. Bump version in packages/python-sdk/pyproject.toml
+#   2. Commit and push to main
+#   3. git tag python-v0.0.2 && git push --tags
+#   4. This workflow runs, builds, publishes, and creates a GitHub Release.
+
+on:
+  push:
+    tags:
+      - 'python-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name (without python-v prefix)'
+        required: true
+
+concurrency:
+  group: release-python-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build sdist + wheel
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: install build tools
+        run: python -m pip install --upgrade pip build
+
+      - name: read version from pyproject.toml
+        id: version
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('packages/python-sdk/pyproject.toml', 'rb'))['project']['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "SDK version: $VERSION"
+
+      - name: assert tag matches version
+        if: github.event_name == 'push'
+        run: |
+          TAG="${GITHUB_REF#refs/tags/python-v}"
+          VERSION="${{ steps.version.outputs.version }}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "tag $TAG does not match pyproject version $VERSION" >&2
+            exit 1
+          fi
+
+      - name: build sdist + wheel
+        working-directory: packages/python-sdk
+        run: python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: packages/python-sdk/dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/openroom/${{ needs.build.outputs.version }}
+    permissions:
+      # Required for trusted publishing — the workflow mints a short-
+      # lived OIDC token that PyPI exchanges for an upload token.
+      id-token: write
+      # Required to create the GitHub Release at the end.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist/
+
+      - name: publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+      - name: create github release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF#refs/tags/}" \
+              --title "Python SDK ${{ needs.build.outputs.version }}" \
+              --generate-notes \
+              dist/*

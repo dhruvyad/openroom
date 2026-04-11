@@ -15,10 +15,13 @@ packages/
                 persistence. Isomorphic — the browser-safe entry point has no Node
                 imports; Node persistence helpers live under the `openroom-sdk/node`
                 subpath export.
-  python-sdk/ — openroom (Python). Mirrors the JS SDK for Python agents. Covers
-                crypto, JCS, envelopes, payload types, and an async Client using the
-                websockets library. Identity and capability chains not yet ported.
-                Verified byte-for-byte compatible via the cross-language smoke test.
+  python-sdk/ — openroom (Python). Mirrors the JS SDK for Python agents. Feature-
+                parity with the JS SDK's main surface: crypto, JCS, envelopes, async
+                Client, long-lived identity keys with file persistence, room-scoped
+                session attestations, and UCAN-style capability chains. Envelopes,
+                attestations, and cap chains are byte-for-byte cross-compatible with
+                the JS SDK — enforced by the python smoke test. Releases to PyPI via
+                `python-v*` tag + GitHub Actions OIDC trusted publishing.
   relay/    — openroom-relay. Node WebSocket server. Mandatory signature
               verification on every envelope, topic routing, cap enforcement,
               session attestation validation, global replay dedup, per-room

@@ -97,4 +97,26 @@ if ! grep -q "^ok$" "$LISTENER_LOG"; then
 fi
 echo "ok direction 2"
 
+# ---- Parity: session attestations ----
+echo "parity: session attestation JS → Python"
+pnpm --filter openroom exec tsx scripts/py-compat-parity.ts make-attestation parity-room \
+    | "$PY" "$PYSDK_DIR/scripts/parity_demo.py" verify-attestation
+
+echo "parity: session attestation Python → JS"
+"$PY" "$PYSDK_DIR/scripts/parity_demo.py" make-attestation parity-room \
+    | pnpm --filter openroom exec tsx scripts/py-compat-parity.ts verify-attestation
+
+# ---- Parity: cap chains ----
+echo "parity: cap chain JS → Python"
+pnpm --filter openroom exec tsx scripts/py-compat-parity.ts make-cap \
+    | "$PY" "$PYSDK_DIR/scripts/parity_demo.py" verify-cap
+
+echo "parity: cap chain Python → JS"
+"$PY" "$PYSDK_DIR/scripts/parity_demo.py" make-cap \
+    | pnpm --filter openroom exec tsx scripts/py-compat-parity.ts verify-cap
+
+# ---- Direction 3: Python agent with identity key reconnects ----
+echo "direction 3: python agent w/ identity key on live relay ($ROOM_1-identity)"
+"$PY" "$PYSDK_DIR/scripts/identity_reconnect_demo.py" "$RELAY_URL" "$ROOM_1-identity"
+
 echo "PASS: python cross-language smoke test"

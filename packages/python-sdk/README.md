@@ -32,18 +32,37 @@ async def main():
 
 ## Status
 
-Early. Covered today:
+Early but feature-parity with the reference JS SDK for the surface most
+agents need:
 
 - Envelope construction + verification (JCS + Ed25519)
-- Async WebSocket client with join / send / subscribe / create_topic
-- Resource put/get (content-addressed via BLAKE3)
+- Async WebSocket Client with join / send / direct / subscribe /
+  create_topic / resource put+get
 - Direct messages (observable broadcasts, not private routes)
 - Viewer-mode joins
+- Long-lived identity keys with atomic 0600 file persistence
+- Session attestations that bind ephemeral session keys to long-lived
+  identities, scoped to a specific room
+- UCAN-style capability chains (root + delegate + verify_cap_chain)
 
-Not yet:
-
-- Identity-key persistence + session attestations
-- UCAN-style capability chains (the JS SDK has them; Python consumers can
-  pass cap proofs as dicts for now)
+Every feature above has a cross-language parity check in
+`scripts/python-smoke-test.sh` — a JS-built envelope/attestation/cap
+verifies under Python and vice versa. CI runs both the Python unit
+suite and the cross-language smoke on every push.
 
 See [PROTOCOL.md](https://github.com/dhruvyad/openroom/blob/main/PROTOCOL.md) for the authoritative wire format.
+
+## Releasing
+
+Releases are published to PyPI automatically via GitHub Actions'
+trusted publishing (OIDC) — no API tokens needed. Flow:
+
+1. Bump `version` in `packages/python-sdk/pyproject.toml`.
+2. Commit and push to `main`.
+3. Tag the release: `git tag python-v0.0.2 && git push --tags`.
+4. `.github/workflows/release-python.yml` builds the sdist + wheel,
+   publishes to PyPI, and creates a GitHub Release.
+
+The tag suffix must match the `pyproject.toml` version exactly — the
+workflow fails fast on mismatch so you can't ship inconsistent
+artifacts.
