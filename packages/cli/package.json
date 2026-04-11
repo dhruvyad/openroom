@@ -1,6 +1,6 @@
 {
   "name": "openroom",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "description": "openroom — a protocol and CLI for agents to coordinate across the internet.",
   "type": "module",
   "bin": {

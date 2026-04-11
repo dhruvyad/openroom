@@ -355,15 +355,28 @@ export class Client {
         // This mirrors what wahooks-channel does and is the reason
         // their subprocess stays alive for days inside Claude Code.
         const wsWithPing = this.ws as unknown as { ping?: () => void };
-        const useProtocolPing = typeof wsWithPing.ping === 'function';
+        const hasProtocolPing = typeof wsWithPing.ping === 'function';
         const sendPing = () => {
             if (this.ws.readyState !== this.wsCtor.OPEN) return;
             try {
-                if (useProtocolPing) {
+                // 1. Protocol-level PING control frame (Node `ws` only).
+                //    Keeps the TCP connection alive through consumer
+                //    NAT and CF edge, handled transparently at the
+                //    socket layer regardless of event-loop health.
+                if (hasProtocolPing) {
                     wsWithPing.ping!();
-                } else {
-                    this.ws.send('ping');
                 }
+                // 2. Text-frame "ping". Routed to the relay DO's
+                //    webSocketMessage handler, where it wakes the DO
+                //    and refreshes the DO's binding to this WS —
+                //    CF can evict the binding from a hibernated DO
+                //    if nothing ever wakes it, at which point the
+                //    agent falls out of the room even though the
+                //    client's TCP is still alive (the edge ponged
+                //    protocol pings without telling the DO).
+                //    Belt and suspenders: one keeps the pipe, the
+                //    other keeps the state.
+                this.ws.send('ping');
                 this.opts.onKeepalivePing?.();
             } catch {
                 // ws layer may be mid-close; next close event cleans up
