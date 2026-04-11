@@ -107,15 +107,37 @@ export interface ClientOptions {
     onResourceChanged?: (event: ResourceChangedEvent) => void;
     onError?: (reason: string) => void;
     /** Fired when the underlying WebSocket closes for any reason —
-     *  a relay restart, a network drop, or an explicit leave. The
-     *  client does not auto-reconnect. Callers that want the
-     *  connection back should construct a new Client. */
+     *  a relay restart, a network drop, or an explicit leave. With
+     *  autoReconnect enabled the Client will attempt to restore the
+     *  connection before surfacing the close; this callback fires
+     *  only on *final* closes (explicit leave or reconnect gave up). */
     onClose?: (meta: { code?: number; reason?: string }) => void;
     /** Fired every time the keepalive ping is sent. Diagnostic only;
      *  callers typically don't need to know, but the MCP adapter
      *  uses it to prove the keepalive path is running inside
      *  subprocess-hosted servers. */
     onKeepalivePing?: () => void;
+    /** Fired when an unexpected close triggers a reconnect attempt
+     *  (before the attempt actually runs). */
+    onReconnecting?: (meta: { attempt: number; delayMs: number }) => void;
+    /** Fired after a successful auto-reconnect restored the room
+     *  membership. The Client re-subscribes to topics, fires a fresh
+     *  joined event snapshot onto cached state, and signals via this
+     *  callback so the caller can refresh any UI. */
+    onReconnected?: () => void;
+    /** If true, when the WebSocket drops unexpectedly the Client will
+     *  automatically open a fresh WS and rejoin the same room,
+     *  reusing the same session keypair. Relay's handleJoin evicts
+     *  the stale agent entry for an existing session pubkey and
+     *  accepts the new one, so identity continuity is preserved.
+     *  Recommended for long-running subprocesses (e.g. the MCP
+     *  adapter). Default false. */
+    autoReconnect?: boolean;
+    /** Initial backoff for reconnect attempts in ms. Doubles each
+     *  failed attempt up to reconnectMaxDelayMs. Default 1000. */
+    reconnectBaseDelayMs?: number;
+    /** Cap on the reconnect backoff. Default 30000. */
+    reconnectMaxDelayMs?: number;
 }
 
 interface PendingRequest {
@@ -156,7 +178,7 @@ function messageDataToString(data: unknown): string {
 }
 
 export class Client {
-    private ws: WebSocketLike;
+    private ws!: WebSocketLike;
     private wsCtor: WebSocketConstructorLike;
     private _privateKey: Uint8Array;
     private _publicKey: Uint8Array;
@@ -172,6 +194,17 @@ export class Client {
     private _topics: TopicSummary[] = [];
     private _resources: ResourceSummary[] = [];
     private _recentMessages: RecentMessage[] = [];
+    /** Topics we've explicitly subscribed to via subscribe(). Tracked
+     *  separately from _topics (which is the room-wide topic list) so
+     *  auto-reconnect can re-establish subscriptions on a fresh WS. */
+    private _subscribedTopics = new Set<string>();
+    /** Set to true when leave() is called so the close handler knows
+     *  not to treat it as an unexpected drop and trigger reconnect. */
+    private leaving = false;
+    private reconnectAttempt = 0;
+    private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    private readonly relayBaseUrl: string;
+    private readonly roomUrl: string;
 
     constructor(private opts: ClientOptions, keypair?: ClientKeypair) {
         const kp = keypair ?? generateKeypair();
@@ -179,9 +212,16 @@ export class Client {
         this._publicKey = kp.publicKey;
         this.wsCtor = opts.webSocket;
 
-        const baseUrl = opts.relayUrl.replace(/\/+$/, '');
-        const url = `${baseUrl}/v1/room/${encodeURIComponent(opts.room)}`;
-        this.ws = new this.wsCtor(url);
+        this.relayBaseUrl = opts.relayUrl.replace(/\/+$/, '');
+        this.roomUrl = `${this.relayBaseUrl}/v1/room/${encodeURIComponent(opts.room)}`;
+        this.openSocket();
+    }
+
+    /** Open a fresh WebSocket and wire up handlers. Called once from
+     *  the constructor and once per reconnect attempt. Clears any
+     *  prior keepalive and pending state before rewiring. */
+    private openSocket(): void {
+        this.ws = new this.wsCtor(this.roomUrl);
         this.ws.addEventListener('message', (event) => {
             this.handleServerEvent(messageDataToString(event.data));
         });
@@ -207,15 +247,84 @@ export class Client {
                     new Error('connection closed before join completed')
                 );
             }
-            const code = ev && typeof ev === 'object' && 'code' in ev
-                ? (ev as { code?: number }).code
-                : undefined;
+            const code =
+                ev && typeof ev === 'object' && 'code' in ev
+                    ? (ev as { code?: number }).code
+                    : undefined;
             const reason =
                 ev && typeof ev === 'object' && 'reason' in ev
                     ? String((ev as { reason?: unknown }).reason)
                     : undefined;
+
+            // If the caller asked for auto-reconnect and this wasn't a
+            // deliberate leave, schedule a reconnect with exponential
+            // backoff. We don't fire onClose in this path — onClose is
+            // reserved for final terminations (leave, reconnect disabled).
+            if (this.opts.autoReconnect && !this.leaving) {
+                this.scheduleReconnect();
+                return;
+            }
+
             this.opts.onClose?.({ code, reason });
         });
+    }
+
+    private scheduleReconnect(): void {
+        if (this.reconnectTimer !== null) return;
+        const base = this.opts.reconnectBaseDelayMs ?? 1_000;
+        const cap = this.opts.reconnectMaxDelayMs ?? 30_000;
+        // Exponential backoff: base * 2^attempt, capped.
+        const delayMs = Math.min(cap, base * Math.pow(2, this.reconnectAttempt));
+        this.reconnectAttempt += 1;
+        this.opts.onReconnecting?.({
+            attempt: this.reconnectAttempt,
+            delayMs,
+        });
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            void this.runReconnect();
+        }, delayMs);
+        const ref = this.reconnectTimer as unknown as {
+            unref?: () => void;
+        };
+        if (typeof ref.unref === 'function') ref.unref();
+    }
+
+    private async runReconnect(): Promise<void> {
+        // Reset the join promise machinery so the rejoin handshake
+        // resolves through a fresh promise chain.
+        const rejoin = new Promise<void>((resolve, reject) => {
+            this.joinResolve = resolve;
+            this.joinReject = reject;
+        });
+        try {
+            this.openSocket();
+            await rejoin;
+            // Successfully rejoined. Re-subscribe to topics we had
+            // before the drop. Run them sequentially so any per-topic
+            // failure only affects that topic.
+            const topicsToResume = Array.from(this._subscribedTopics);
+            // Clear first so the per-topic subscribe() below can
+            // re-populate as each call succeeds.
+            this._subscribedTopics.clear();
+            for (const topic of topicsToResume) {
+                try {
+                    await this.subscribe(topic);
+                } catch (err) {
+                    this.opts.onError?.(
+                        `reconnect: failed to re-subscribe to ${topic}: ${(err as Error).message}`
+                    );
+                }
+            }
+            this.reconnectAttempt = 0;
+            this.opts.onReconnected?.();
+        } catch (err) {
+            // Rejoin failed. The close handler already fired and will
+            // re-schedule via scheduleReconnect on the new ws close.
+            this.opts.onError?.(
+                `reconnect attempt failed: ${(err as Error).message}`
+            );
+        }
     }
 
     connect(): Promise<void> {
@@ -524,6 +633,8 @@ export class Client {
         if (!result.success) {
             throw new Error(result.error ?? 'subscribe failed');
         }
+        // Track for auto-reconnect restore.
+        this._subscribedTopics.add(topic);
     }
 
     async unsubscribe(topic: string): Promise<void> {
@@ -535,6 +646,7 @@ export class Client {
         if (!result.success) {
             throw new Error(result.error ?? 'unsubscribe failed');
         }
+        this._subscribedTopics.delete(topic);
     }
 
     async listTopics(): Promise<TopicSummary[]> {
@@ -637,6 +749,13 @@ export class Client {
     }
 
     leave() {
+        // Mark as a deliberate termination so the close handler
+        // doesn't trigger auto-reconnect.
+        this.leaving = true;
+        if (this.reconnectTimer !== null) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
         if (this.ws.readyState === this.wsCtor.OPEN) {
             const envelope = makeEnvelope<LeavePayload>(
                 'leave',
