@@ -6,8 +6,6 @@ import path from 'node:path';
 import * as readline from 'node:readline/promises';
 
 import {
-    defaultIdentityPath,
-    loadOrCreateIdentity,
     makeEnvelope,
     makeSessionAttestation,
     toBase64Url,
@@ -15,6 +13,7 @@ import {
     type Keypair,
     type UnannouncePayload,
 } from 'openroom-sdk';
+import { defaultIdentityPath, loadOrCreateIdentity } from 'openroom-sdk/node';
 import { Client } from './client.js';
 import { runMcpServer } from './claude-mcp.js';
 

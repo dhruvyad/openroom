@@ -29,7 +29,8 @@ import {
     ListToolsRequestSchema,
     type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import { loadOrCreateIdentity, type Keypair } from 'openroom-sdk';
+import { type Keypair } from 'openroom-sdk';
+import { loadOrCreateIdentity } from 'openroom-sdk/node';
 
 import { Client } from './client.js';
 
