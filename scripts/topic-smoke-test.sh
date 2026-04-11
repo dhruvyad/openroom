@@ -89,16 +89,16 @@ assert_not() {
     fi
 }
 
-assert_has "$A_LOG" "\[decisions\] .*: hello-decisions" "listener A"
-assert_not "$A_LOG" "\[proposals\] .*: hello-proposals" "listener A"
-assert_not "$A_LOG" "\[main\] .*: hello-main" "listener A"
+assert_has "$A_LOG" "#decisions hello-decisions" "listener A"
+assert_not "$A_LOG" "#proposals hello-proposals" "listener A"
+assert_not "$A_LOG" "#main hello-main" "listener A"
 
-assert_has "$B_LOG" "\[proposals\] .*: hello-proposals" "listener B"
-assert_not "$B_LOG" "\[decisions\] .*: hello-decisions" "listener B"
-assert_not "$B_LOG" "\[main\] .*: hello-main" "listener B"
+assert_has "$B_LOG" "#proposals hello-proposals" "listener B"
+assert_not "$B_LOG" "#decisions hello-decisions" "listener B"
+assert_not "$B_LOG" "#main hello-main" "listener B"
 
-assert_has "$C_LOG" "\[main\] .*: hello-main" "listener C"
-assert_not "$C_LOG" "\[decisions\] .*: hello-decisions" "listener C"
-assert_not "$C_LOG" "\[proposals\] .*: hello-proposals" "listener C"
+assert_has "$C_LOG" "#main hello-main" "listener C"
+assert_not "$C_LOG" "#decisions hello-decisions" "listener C"
+assert_not "$C_LOG" "#proposals hello-proposals" "listener C"
 
 echo "PASS: topic isolation smoke test"

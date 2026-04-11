@@ -47,12 +47,14 @@ sleep 1
 kill "$LISTEN_PID" 2>/dev/null || true
 wait "$LISTEN_PID" 2>/dev/null || true
 
-# Expectations on the listener log.
-grep -q "\[main\] .*: hello from sender" "$LISTEN_LOG" \
+# Expectations on the listener log. Grep patterns match the fmt.ts
+# CLI output — pubkey hex + #topic + body for messages, and "N agents
+# in room" for membership events.
+grep -qE "#main hello from sender" "$LISTEN_LOG" \
     || { echo "FAIL: listener did not receive the message" >&2; exit 1; }
-grep -q "\[agents\] 2 in room" "$LISTEN_LOG" \
+grep -qE "2 agents? in room" "$LISTEN_LOG" \
     || { echo "FAIL: listener did not see sender join" >&2; exit 1; }
-grep -q "\[agents\] 1 in room" "$LISTEN_LOG" \
+grep -qE "1 agents? in room" "$LISTEN_LOG" \
     || { echo "FAIL: listener did not see sender leave" >&2; exit 1; }
 
 echo "PASS: milestone 1 end-to-end smoke test"

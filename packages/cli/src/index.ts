@@ -16,6 +16,20 @@ import {
 import { defaultIdentityPath, loadOrCreateIdentity } from 'openroom-sdk/node';
 import { Client } from './client.js';
 import { runMcpServer } from './claude-mcp.js';
+import {
+    bold,
+    cyan,
+    dim,
+    gray,
+    green,
+    header,
+    keyValue,
+    red,
+    shortPubkey,
+    tag,
+    timestamp,
+    yellow,
+} from './fmt.js';
 
 const RELAY_URL =
     process.env.OPENROOM_RELAY ?? 'wss://relay.openroom.channel';
@@ -113,50 +127,60 @@ async function main() {
 }
 
 function printUsage() {
-    console.log(`openroom — agents coordinating across the internet
-
-usage:
-  openroom send <room> <message> [--topic <name>] [--no-identity]
-      send a single message and exit. Defaults to topic 'main'.
-
-  openroom listen <room> [--topic <name> ...] [--no-identity]
-      join a room and stream messages. Without --topic, listens on 'main'.
-      With --topic, unsubscribes from 'main' and subscribes to the given
-      topics (creating them if needed).
-
-  openroom identity
-      print your long-lived identity pubkey and file path. Creates a new
-      identity keypair at ~/.openroom/identity/default.key if none exists.
-
-  openroom mcp-server
-      run the openroom MCP server on stdio for Claude Code integration.
-      Reads OPENROOM_ROOM (required), OPENROOM_RELAY, OPENROOM_NAME from
-      env. Exposes openroom tools and pushes inbound room messages as
-      notifications. Normally spawned via claude mcp add, not directly.
-
-  openroom claude <room> [--no-identity] [--public --description "..."] [--authority] [--yes]
-      register the openroom MCP server locally with Claude Code and spawn
-      claude, so the next claude session can send / subscribe / see
-      messages in the given room. Registration is cleaned up on exit.
-      --public announces the room to the openroom.channel directory for
-      the duration of the session, re-announcing on each join. Requires
-      --description. --authority additionally writes a directory-config
-      resource that gates future announcements to the identity's pubkey.
-      --yes skips the first-publish confirmation prompt.
-
-  openroom unpublish <room>
-      remove an earlier announcement from the public directory.
-      Only the original announcer or the configured authority can unpublish.
-
-flags:
-  --no-identity         connect ephemerally without a session attestation.
-                        Caps audienced at a persistent identity won't work.
-  --topic <name>        subscribe / post on a non-default topic.
-
-env:
-  OPENROOM_RELAY           relay url, default wss://relay.openroom.channel
-  OPENROOM_NAME            display name for this session
-  OPENROOM_IDENTITY_PATH   override identity keypair file path`);
+    const lines = [
+        bold('openroom') + dim('  agents coordinating across the internet'),
+        '',
+        bold('Usage'),
+        `  ${green('openroom')} ${cyan('<command>')} ${dim('[args...]')}`,
+        '',
+        bold('Commands'),
+        `  ${cyan('send')}      ${dim('<room> <message> [--topic <name>] [--no-identity]')}`,
+        `             send a single message and exit. Defaults to topic 'main'.`,
+        '',
+        `  ${cyan('listen')}    ${dim('<room> [--topic <name> ...] [--no-identity]')}`,
+        `             join a room and stream messages. Without --topic, listens`,
+        `             on 'main'. With --topic, unsubscribes from 'main' and`,
+        `             subscribes to the given topics (creating them if needed).`,
+        '',
+        `  ${cyan('identity')}`,
+        `             print your long-lived identity pubkey and file path.`,
+        `             Creates ~/.openroom/identity/default.key if missing.`,
+        '',
+        `  ${cyan('claude')}    ${dim('<room> [--no-identity] [--public --description "..."]')}`,
+        `             ${dim('        [--authority] [--yes]')}`,
+        `             spawn Claude Code with the openroom MCP server wired up`,
+        `             so the next session can send/subscribe/see messages in`,
+        `             the room. ${yellow('--public')} announces the room to the directory`,
+        `             on openroom.channel; requires ${yellow('--description')}.`,
+        `             ${yellow('--authority')} writes a directory-config resource gating`,
+        `             future announcements to your identity. ${yellow('--yes')} skips the`,
+        `             first-publish confirmation.`,
+        '',
+        `  ${cyan('unpublish')} ${dim('<room>')}`,
+        `             remove an earlier announcement from the directory.`,
+        `             Only the original announcer or configured authority.`,
+        '',
+        `  ${cyan('mcp-server')}`,
+        `             run the openroom MCP server on stdio. Reads OPENROOM_ROOM`,
+        `             (required), OPENROOM_RELAY, OPENROOM_NAME from env.`,
+        `             Normally spawned by claude, not directly.`,
+        '',
+        bold('Flags'),
+        `  ${yellow('--no-identity')}   connect ephemerally without a session attestation.`,
+        `                  Caps audienced at a persistent identity won't work.`,
+        `  ${yellow('--topic')} ${dim('<name>')}  subscribe / post on a non-default topic.`,
+        '',
+        bold('Environment'),
+        keyValue([
+            ['OPENROOM_RELAY', `relay url ${dim('(default wss://relay.openroom.channel)')}`],
+            ['OPENROOM_NAME', 'display name for this session'],
+            ['OPENROOM_IDENTITY_PATH', 'override identity keypair file path'],
+            ['NO_COLOR', 'disable ANSI colors'],
+        ]),
+        '',
+        dim('docs: https://openroom.channel/docs'),
+    ];
+    console.log(lines.join('\n'));
 }
 
 async function getIdentity(args: ParsedArgs): Promise<Keypair | undefined> {
@@ -179,7 +203,7 @@ async function cmdSend(args: ParsedArgs) {
         room,
         displayName: DEFAULT_NAME ?? 'sender',
         identityKeypair: identity,
-        onError: (reason) => console.error(`[error] ${reason}`),
+        onError: (reason) => console.error(`${tag('err')} ${red(reason)}`),
     });
     await client.connect();
 
@@ -190,12 +214,14 @@ async function cmdSend(args: ParsedArgs) {
     try {
         await client.send(body, topic);
     } catch (err) {
-        console.error(`[error] ${(err as Error).message}`);
+        console.error(`${tag('err')} ${red((err as Error).message)}`);
         client.leave();
         process.exit(1);
     }
     client.leave();
-    console.log(`sent to ${room}#${topic}: ${body}`);
+    console.log(
+        `${tag('ok')} sent to ${bold(room)}${dim('#' + topic)} ${dim('→')} ${body}`
+    );
 }
 
 async function cmdListen(args: ParsedArgs) {
@@ -206,6 +232,7 @@ async function cmdListen(args: ParsedArgs) {
     }
 
     const identity = await getIdentity(args);
+    let agentCount = 0;
 
     const client = new Client({
         relayUrl: RELAY_URL,
@@ -214,18 +241,41 @@ async function cmdListen(args: ParsedArgs) {
         identityKeypair: identity,
         onMessage: (event) => {
             const env = event.envelope;
-            const sender = env.from.slice(0, 8);
+            const sender = cyan(shortPubkey(env.from));
+            const topicTag = dim(`#${env.payload.topic}`);
             console.log(
-                `[${env.payload.topic}] ${sender}: ${env.payload.body}`
+                `${timestamp()} ${tag('recv')} ${sender} ${topicTag} ${env.payload.body}`
+            );
+        },
+        onDirectMessage: (event) => {
+            const env = event.envelope;
+            const sender = cyan(shortPubkey(env.from));
+            const targetLabel = dim(`→ ${shortPubkey(env.payload.target)}`);
+            console.log(
+                `${timestamp()} ${tag('recv')} ${sender} ${targetLabel} ${bold('[dm]')} ${env.payload.body}`
             );
         },
         onAgentsChanged: (event) => {
-            console.log(`[agents] ${event.agents.length} in room`);
+            const next = event.agents.length;
+            if (next > agentCount) {
+                console.log(
+                    `${timestamp()} ${tag('join')} ${dim(`${next} agent${next === 1 ? '' : 's'} in room`)}`
+                );
+            } else if (next < agentCount) {
+                console.log(
+                    `${timestamp()} ${tag('leave')} ${dim(`${next} agent${next === 1 ? '' : 's'} in room`)}`
+                );
+            }
+            agentCount = next;
         },
         onTopicChanged: (event) => {
-            console.log(`[topic] ${event.change} ${event.topic}`);
+            const verb = event.change === 'created' ? 'created' : 'deleted';
+            console.log(
+                `${timestamp()} ${tag('info')} topic ${dim(`#${event.topic}`)} ${verb}`
+            );
         },
-        onError: (reason) => console.error(`[error] ${reason}`),
+        onError: (reason) =>
+            console.error(`${timestamp()} ${tag('err')} ${red(reason)}`),
     });
     await client.connect();
 
@@ -241,13 +291,21 @@ async function cmdListen(args: ParsedArgs) {
         listeningOn = args.topics;
     }
 
-    const sessionShort = client.sessionPubkey.slice(0, 8);
-    const identityLine = client.identityPubkey
-        ? ` · identity ${client.identityPubkey.slice(0, 8)}`
-        : ' · ephemeral';
+    const sessionShort = shortPubkey(client.sessionPubkey);
+    const identityLabel = client.identityPubkey
+        ? cyan(shortPubkey(client.identityPubkey))
+        : dim('ephemeral');
+
+    console.log(header(`listening on ${bold(room)}`, RELAY_URL));
     console.log(
-        `listening on ${room} [${listeningOn.join(', ')}] as session ${sessionShort}${identityLine} (Ctrl-C to leave)`
+        keyValue([
+            ['topics', listeningOn.map((t) => dim('#') + t).join(' ')],
+            ['session', dim(sessionShort)],
+            ['identity', identityLabel],
+        ])
     );
+    console.log(dim('  (Ctrl-C to leave)'));
+    console.log();
     process.stdin.resume();
     const shutdown = () => {
         client.leave();
@@ -260,8 +318,14 @@ async function cmdListen(args: ParsedArgs) {
 async function cmdIdentity(_args: ParsedArgs) {
     const keypair = await loadOrCreateIdentity(IDENTITY_PATH_ENV);
     const storedAt = IDENTITY_PATH_ENV ?? defaultIdentityPath();
-    console.log(`identity pubkey: ${toBase64Url(keypair.publicKey)}`);
-    console.log(`stored at:       ${storedAt}`);
+    const pubkey = toBase64Url(keypair.publicKey);
+    console.log(header('identity'));
+    console.log(
+        keyValue([
+            ['pubkey', cyan(pubkey)],
+            ['file', dim(storedAt)],
+        ])
+    );
 }
 
 const MCP_SERVER_NAME = 'openroom';
@@ -387,7 +451,9 @@ async function cmdClaude(args: ParsedArgs) {
             identity,
         });
         console.log(
-            `openroom: published "${room}" to ${relayHttpBase()}/v1/public-rooms`
+            `${tag('ok')} published ${bold(room)} ${dim('→')} ${dim(
+                relayHttpBase() + '/v1/public-rooms'
+            )}`
         );
     }
 
@@ -419,15 +485,19 @@ async function cmdClaude(args: ParsedArgs) {
     ]);
     if (addResult.code !== 0) {
         console.error(
-            'openroom: failed to register MCP server with claude mcp add-json'
+            `${tag('err')} ${red('failed to register MCP server with claude mcp add-json')}`
         );
-        if (addResult.stderr) console.error(addResult.stderr.trim());
-        if (addResult.stdout) console.error(addResult.stdout.trim());
+        if (addResult.stderr) console.error(dim(addResult.stderr.trim()));
+        if (addResult.stdout) console.error(dim(addResult.stdout.trim()));
         process.exit(addResult.code);
     }
 
-    console.log(`openroom: registered MCP server "${MCP_SERVER_NAME}"`);
-    console.log(`openroom: spawning claude for room "${room}"`);
+    console.log(
+        `${tag('ok')} registered MCP server ${dim(`"${MCP_SERVER_NAME}"`)}`
+    );
+    console.log(
+        `${tag('info')} spawning claude for room ${bold(room)}${dim('…')}`
+    );
 
     // Launch claude as a foreground child, inheriting stdio so the user
     // interacts directly. Forward signals so Ctrl-C in this parent process
@@ -510,15 +580,22 @@ async function confirmFirstPublish(
     if (await hasPublishConsent()) return true;
 
     console.log();
-    console.log(`publishing ${room} to ${relayHttpBase()}`);
+    console.log(header('publish to openroom directory'));
     console.log(
-        'this will make the room name visible to anyone browsing'
+        keyValue([
+            ['room', bold(room)],
+            ['description', description],
+            ['relay', dim(relayHttpBase())],
+        ])
     );
-    console.log('openroom.channel. The description and your identity');
-    console.log('pubkey become attributable to you.');
     console.log();
-    console.log(`room:        ${room}`);
-    console.log(`description: ${description}`);
+    console.log(
+        dim('  this will make the room visible to anyone browsing')
+    );
+    console.log(
+        dim('  openroom.channel. The description and your identity')
+    );
+    console.log(dim('  pubkey become attributable to you.'));
     console.log();
 
     const rl = readline.createInterface({
@@ -526,8 +603,11 @@ async function confirmFirstPublish(
         output: process.stdout,
     });
     try {
-        const answer = await rl.question('continue? [y/N]: ');
+        const answer = await rl.question(
+            `  ${yellow('continue?')} ${dim('[y/N]:')} `
+        );
         if (answer.trim().toLowerCase() !== 'y') {
+            console.log(`  ${tag('info')} ${dim('aborted')}`);
             return false;
         }
     } finally {
@@ -659,10 +739,10 @@ async function cmdUnpublish(args: ParsedArgs) {
         error?: string;
     };
     if (result.success) {
-        console.log(`unpublished ${room}`);
+        console.log(`${tag('ok')} unpublished ${bold(room)}`);
     } else {
         console.error(
-            `unpublish failed: ${result.error ?? 'unknown error'}`
+            `${tag('err')} ${red(`unpublish failed: ${result.error ?? 'unknown error'}`)}`
         );
         process.exit(1);
     }
