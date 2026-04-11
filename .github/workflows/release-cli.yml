@@ -132,12 +132,15 @@ jobs:
 
       - name: publish to npm
         run: |
-          TARBALL=$(ls dist-out/openroom-*.tgz | head -1)
+          TARBALL=$(ls "$PWD/dist-out/openroom-"*.tgz | head -1)
           if [ -z "$TARBALL" ]; then
             echo "no tarball found in dist-out/" >&2
             exit 1
           fi
           echo "publishing $TARBALL"
+          # Absolute path is required here — npm 11 parses relative
+          # paths containing a slash as git shorthand and tries to
+          # clone `github:dist-out/openroom-...`.
           # No NODE_AUTH_TOKEN needed — npm uses the GitHub OIDC
           # id-token (granted by permissions.id-token: write below)
           # to authenticate against npmjs.com's trusted publisher
