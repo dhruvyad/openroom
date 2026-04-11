@@ -143,14 +143,20 @@ export class RoomDurableObject {
     > | null = null;
 
     /**
-     * Ensure RelayCore has loaded the snapshot for this room. Idempotent.
-     * We defer the actual RelayCore.loadSnapshot() call until we know the
-     * room name (from the URL on fetch, or from an attached agent on wake).
+     * Ensure RelayCore has the room loaded. Called from every fetch /
+     * webSocketMessage entry point. Idempotent in the hot path (short-
+     * circuits when the room is already in memory) but handles the
+     * cold-reload case correctly: if the room was previously cleared by
+     * handleLeave (last agent disconnected) or we're waking from
+     * hibernation with a stale roomName reference, we re-read the
+     * snapshot from storage before dispatching. Storage is the durable
+     * source of truth; in-memory state is a cache.
      */
-    private loadCoreIfNeeded(roomName: string) {
-        if (this.roomName !== null) return;
+    private async loadCoreIfNeeded(roomName: string): Promise<void> {
         this.roomName = roomName;
-        const snapshot = this.pendingSnapshot ?? { topics: [], resources: [] };
+        if (this.core.hasRoom(roomName)) return;
+        const snapshot =
+            this.pendingSnapshot ?? (await this.store.loadSnapshot());
         this.core.loadSnapshot(roomName, snapshot);
         this.pendingSnapshot = null;
     }
@@ -168,7 +174,7 @@ export class RoomDurableObject {
             if (!roomName) {
                 return new Response('missing room param', { status: 400 });
             }
-            this.loadCoreIfNeeded(roomName);
+            await this.loadCoreIfNeeded(roomName);
             const resource = this.core.readResource(
                 roomName,
                 'directory-config'
@@ -207,7 +213,7 @@ export class RoomDurableObject {
         }
 
         const roomName = decodeURIComponent(match[1]!);
-        this.loadCoreIfNeeded(roomName);
+        await this.loadCoreIfNeeded(roomName);
 
         const pair = new WebSocketPair();
         const client = pair[0];
@@ -243,7 +249,7 @@ export class RoomDurableObject {
         // a hibernation wake (the core's in-memory connections map is
         // empty, but the ws itself survived).
         if (!this.core.knows(ws)) {
-            const restored = this.rehydrateFromAttachment(ws);
+            const restored = await this.rehydrateFromAttachment(ws);
             if (!restored) {
                 ws.close(1011, 'session state missing');
                 return;
@@ -266,7 +272,7 @@ export class RoomDurableObject {
     ): Promise<void> {
         await this.initialized;
         if (!this.core.knows(ws)) {
-            this.rehydrateFromAttachment(ws);
+            await this.rehydrateFromAttachment(ws);
         }
         if (this.core.knows(ws)) {
             this.core.detach(ws);
@@ -277,7 +283,7 @@ export class RoomDurableObject {
     async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
         await this.initialized;
         if (!this.core.knows(ws)) {
-            this.rehydrateFromAttachment(ws);
+            await this.rehydrateFromAttachment(ws);
         }
         if (this.core.knows(ws)) {
             this.core.detach(ws);
@@ -290,7 +296,7 @@ export class RoomDurableObject {
      * agent was successfully reconstructed; false if the attachment is
      * missing or unrecognized (caller should close the ws).
      */
-    private rehydrateFromAttachment(ws: WebSocket): boolean {
+    private async rehydrateFromAttachment(ws: WebSocket): Promise<boolean> {
         const raw = ws.deserializeAttachment();
         if (!raw || typeof raw !== 'object') {
             logEvent('warn', 'openroom.rehydration_no_attachment', {
@@ -309,7 +315,7 @@ export class RoomDurableObject {
             attachment.identityAttestation?.room ??
             this.roomName ??
             '__unknown__';
-        this.loadCoreIfNeeded(roomName);
+        await this.loadCoreIfNeeded(roomName);
 
         const { droppedTopics } = this.core.rehydrateAgent(
             ws,

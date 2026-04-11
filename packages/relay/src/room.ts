@@ -243,6 +243,12 @@ export class RelayCore {
         return this.connections.has(ws);
     }
 
+    /** Is the given room currently loaded in memory? False after the room
+     *  was emptied via handleLeave and not yet re-loaded from storage. */
+    hasRoom(roomName: string): boolean {
+        return this.rooms.has(roomName);
+    }
+
     getAgent(ws: RelayWebSocket): Agent | undefined {
         return this.connections.get(ws);
     }
