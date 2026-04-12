@@ -12,6 +12,9 @@
 const SCHEMA_VERSION = 1;
 const TOPIC_KEY_PREFIX = 'topic:';
 const RESOURCE_KEY_PREFIX = 'resource:';
+const MESSAGE_KEY_PREFIX = 'msg:';
+const MESSAGE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const MESSAGE_MAX_COUNT = 200;
 
 export interface TopicRecord {
     v: number;
@@ -33,9 +36,17 @@ export interface ResourceRecord {
     content: Uint8Array;
 }
 
+export interface MessageRecord {
+    v: number;
+    type: 'message' | 'direct_message';
+    envelope: unknown;
+    at: number;
+}
+
 export interface RoomSnapshot {
     topics: TopicRecord[];
     resources: ResourceRecord[];
+    messages: MessageRecord[];
 }
 
 export interface Logger {
@@ -57,10 +68,12 @@ export class RoomStore {
     /** Load every topic and resource in a single batch. Called from the DO
      *  constructor's async initialize() path on every wake. */
     async loadSnapshot(): Promise<RoomSnapshot> {
-        const [topicEntries, resourceEntries] = await Promise.all([
-            this.storage.list({ prefix: TOPIC_KEY_PREFIX }),
-            this.storage.list({ prefix: RESOURCE_KEY_PREFIX }),
-        ]);
+        const [topicEntries, resourceEntries, messageEntries] =
+            await Promise.all([
+                this.storage.list({ prefix: TOPIC_KEY_PREFIX }),
+                this.storage.list({ prefix: RESOURCE_KEY_PREFIX }),
+                this.storage.list({ prefix: MESSAGE_KEY_PREFIX }),
+            ]);
 
         const topics: TopicRecord[] = [];
         for (const [key, raw] of topicEntries) {
@@ -74,7 +87,48 @@ export class RoomStore {
             if (decoded) resources.push(decoded);
         }
 
-        return { topics, resources };
+        // Prune expired messages and cap count
+        const now = Date.now();
+        const cutoff = now - MESSAGE_MAX_AGE_MS;
+        const staleKeys: string[] = [];
+        const messages: MessageRecord[] = [];
+        for (const [key, raw] of messageEntries) {
+            const record = raw as Partial<MessageRecord>;
+            if (
+                !record ||
+                record.v !== SCHEMA_VERSION ||
+                typeof record.at !== 'number'
+            ) {
+                staleKeys.push(key);
+                continue;
+            }
+            if (record.at * 1000 < cutoff) {
+                staleKeys.push(key);
+                continue;
+            }
+            messages.push(record as MessageRecord);
+        }
+        // Delete stale messages in background
+        if (staleKeys.length > 0) {
+            this.storage.delete(staleKeys).catch((err) => {
+                this.logger.error('openroom.storage_prune_failed', {
+                    op: 'messages.prune',
+                    count: staleKeys.length,
+                    err: String(err),
+                });
+            });
+        }
+        // Sort by timestamp and cap
+        messages.sort((a, b) => a.at - b.at);
+        if (messages.length > MESSAGE_MAX_COUNT) {
+            const excess = messages.splice(0, messages.length - MESSAGE_MAX_COUNT);
+            const excessKeys = excess.map(
+                (m) => `${MESSAGE_KEY_PREFIX}${m.at}:${(m.envelope as { id?: string })?.id ?? ''}`
+            );
+            this.storage.delete(excessKeys).catch(() => {});
+        }
+
+        return { topics, resources, messages };
     }
 
     async putTopic(record: Omit<TopicRecord, 'v'>): Promise<void> {
@@ -93,6 +147,15 @@ export class RoomStore {
 
     async deleteResource(name: string): Promise<void> {
         await this.storage.delete(RESOURCE_KEY_PREFIX + name);
+    }
+
+    async putMessage(record: Omit<MessageRecord, 'v'>): Promise<void> {
+        const stored: MessageRecord = { v: SCHEMA_VERSION, ...record };
+        const id = (record.envelope as { id?: string })?.id ?? '';
+        await this.storage.put(
+            `${MESSAGE_KEY_PREFIX}${record.at}:${id}`,
+            stored
+        );
     }
 
     /** For diagnostics / observability: total bytes currently stored across

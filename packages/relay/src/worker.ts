@@ -513,6 +513,23 @@ export class RoomDurableObject {
             agentMutated: (ws) => {
                 this.dirtyAgents.add(ws as WebSocket);
             },
+            messagePersisted: (record) => {
+                this.pendingWrites.push(
+                    this.store
+                        .putMessage({
+                            type: record.type,
+                            envelope: record.envelope,
+                            at: record.at,
+                        })
+                        .catch((err) => {
+                            logEvent('error', 'openroom.storage_write_failed', {
+                                op: 'message.put',
+                                room: this.roomName,
+                                err: String(err),
+                            });
+                        })
+                );
+            },
         };
     }
 

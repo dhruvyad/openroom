@@ -92,6 +92,12 @@ export interface RelayCoreHooks {
      *  (join, subscribe, unsubscribe, rate token decrement). The DO flushes
      *  the attachment after the current handler returns. */
     agentMutated?(ws: RelayWebSocket): void;
+    /** Called when a message or DM is recorded so the DO can persist it. */
+    messagePersisted?(record: {
+        type: 'message' | 'direct_message';
+        envelope: unknown;
+        at: number;
+    }): void;
 }
 
 /**
@@ -331,6 +337,11 @@ export class RelayCore {
                 createdAt: number;
                 validationHook: string | null;
             }>;
+            messages?: Array<{
+                type: 'message' | 'direct_message';
+                envelope: unknown;
+                at: number;
+            }>;
         }
     ): void {
         const room: Room = {
@@ -338,7 +349,11 @@ export class RelayCore {
             agents: new Map(),
             topics: new Map(),
             resources: new Map(),
-            recentMessages: [],
+            recentMessages: (snapshot.messages ?? []).map((m) => ({
+                type: m.type,
+                envelope: m.envelope as Envelope<unknown>,
+                at: m.at,
+            })),
         };
         for (const t of snapshot.topics) {
             room.topics.set(t.name, {
@@ -949,10 +964,23 @@ export class RelayCore {
             room: roomName,
             envelope,
         };
-        // Room-wide broadcast: every joined agent receives the DM event.
-        // Exclude the sender since they already see their own action via
-        // the direct_result ack.
-        this.broadcastToRoom(room, event, agent.sessionPubkey);
+        // Deliver to the target agent(s) and any viewers. Agents that are
+        // neither sender nor target don't see the DM. Viewers see
+        // everything so researchers can observe coordination.
+        const payload = JSON.stringify(event);
+        for (const [pubkey, other] of room.agents) {
+            if (!other.joined) continue;
+            if (pubkey === agent.sessionPubkey) continue; // sender gets direct_result
+            const isTarget =
+                pubkey === target ||
+                (other.identityPubkey !== undefined &&
+                    other.identityPubkey === target);
+            if (isTarget || other.viewer) {
+                if (other.ws.readyState === WS_OPEN) {
+                    other.ws.send(payload);
+                }
+            }
+        }
         this.recordRecentMessage(room, event);
 
         this.sendResult(agent.ws, {
@@ -1328,17 +1356,23 @@ export class RelayCore {
         if (event.type !== 'message' && event.type !== 'direct_message') {
             return;
         }
-        room.recentMessages.push({
+        const entry: RecentEntry = {
             type: event.type,
             envelope: event.envelope as Envelope<unknown>,
             at: event.envelope.ts,
-        });
+        };
+        room.recentMessages.push(entry);
         if (room.recentMessages.length > MAX_RECENT_MESSAGES) {
             room.recentMessages.splice(
                 0,
                 room.recentMessages.length - MAX_RECENT_MESSAGES
             );
         }
+        this.hooks.messagePersisted?.({
+            type: entry.type,
+            envelope: entry.envelope,
+            at: entry.at,
+        });
     }
 
     private broadcastToRoom(
