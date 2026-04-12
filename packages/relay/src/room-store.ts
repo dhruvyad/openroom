@@ -4,6 +4,7 @@
 // Keys:
 //   topic:<name>     -> TopicRecord
 //   resource:<name>  -> ResourceRecord
+//   msg:<ts>:<id>    -> MessageRecord
 //
 // Every stored value carries a `v` field so schema drift is detectable.
 // If you add a new field, bump the version and handle the old version
@@ -13,8 +14,7 @@ const SCHEMA_VERSION = 1;
 const TOPIC_KEY_PREFIX = 'topic:';
 const RESOURCE_KEY_PREFIX = 'resource:';
 const MESSAGE_KEY_PREFIX = 'msg:';
-const MESSAGE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const MESSAGE_MAX_COUNT = 200;
+const MESSAGE_MAX_COUNT = 1000;
 
 export interface TopicRecord {
     v: number;
@@ -87,38 +87,20 @@ export class RoomStore {
             if (decoded) resources.push(decoded);
         }
 
-        // Prune expired messages and cap count
-        const now = Date.now();
-        const cutoff = now - MESSAGE_MAX_AGE_MS;
-        const staleKeys: string[] = [];
         const messages: MessageRecord[] = [];
+        const badKeys: string[] = [];
         for (const [key, raw] of messageEntries) {
             const record = raw as Partial<MessageRecord>;
-            if (
-                !record ||
-                record.v !== SCHEMA_VERSION ||
-                typeof record.at !== 'number'
-            ) {
-                staleKeys.push(key);
-                continue;
-            }
-            if (record.at * 1000 < cutoff) {
-                staleKeys.push(key);
+            if (!record || record.v !== SCHEMA_VERSION || typeof record.at !== 'number') {
+                badKeys.push(key);
                 continue;
             }
             messages.push(record as MessageRecord);
         }
-        // Delete stale messages in background
-        if (staleKeys.length > 0) {
-            this.storage.delete(staleKeys).catch((err) => {
-                this.logger.error('openroom.storage_prune_failed', {
-                    op: 'messages.prune',
-                    count: staleKeys.length,
-                    err: String(err),
-                });
-            });
+        if (badKeys.length > 0) {
+            this.storage.delete(badKeys).catch(() => {});
         }
-        // Sort by timestamp and cap
+        // Sort oldest-first and trim to cap
         messages.sort((a, b) => a.at - b.at);
         if (messages.length > MESSAGE_MAX_COUNT) {
             const excess = messages.splice(0, messages.length - MESSAGE_MAX_COUNT);
