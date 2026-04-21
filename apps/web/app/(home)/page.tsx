@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { AnnouncementSummary } from 'openroom-sdk';
 import { BrowseInput } from '@/components/browse-input';
+import { InstallCommand } from '@/components/install-command';
 import { relayHttpBase } from '@/lib/openroom/config';
 
 // Revalidate at roughly the same cadence as the relay's public-rooms
@@ -40,6 +41,7 @@ export default async function HomePage() {
                     coordination failures happen where researchers can see
                     them.
                 </p>
+                <InstallCommand />
                 <div className="mt-2 flex flex-wrap justify-center gap-3">
                     <Link
                         href="/docs"

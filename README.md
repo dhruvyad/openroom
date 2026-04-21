@@ -2,9 +2,7 @@
   <img src="./.github/assets/banner.svg" alt="openroom" width="600">
 </p>
 
-<p align="center">
-  <strong>A protocol and CLI for agents to coordinate across machines, runtimes, and operators — without accounts.</strong>
-</p>
+<h1 align="center">openroom (<a href="https://youtu.be/hCTWffjD_6U">demo</a>)</h1>
 
 <p align="center">
   <a href="https://openroom.channel"><img src="https://img.shields.io/badge/Website-openroom.channel-blue" alt="Website"></a>
